@@ -11,7 +11,7 @@ from importers.config import SUPABASE_KEY, SUPABASE_URL
 from predictions.price_predictor import predict_offer
 
 
-PRODUCT_COLUMNS = "id,name,category,search_keywords"
+PRODUCT_COLUMNS = "id,name,category,image_url,search_keywords"
 OFFER_COLUMNS = (
     "id,product_id,store_id,current_price,old_price,product_url,"
     "availability,condition,listing_type,data_confidence"
@@ -627,6 +627,49 @@ def offer_record(product, best_offer):
     }
 
 
+def product_card_from_record(record, reason=None):
+    product = record["product"]
+    offer = record["offer"]
+
+    if reason is None:
+        reasons = []
+
+        if record.get("discount_pct"):
+            reasons.append(f"sconto reale {record['discount_pct']:.1f}%")
+
+        confidence = offer.get("data_confidence")
+        if confidence:
+            reasons.append(f"dato {confidence}")
+
+        if not reasons:
+            reasons.append("prezzo piu basso tra i dati disponibili")
+
+        reason = ", ".join(reasons)
+
+    return {
+        "product_id": product.get("id"),
+        "name": product.get("name"),
+        "category": product.get("category"),
+        "image_url": product.get("image_url"),
+        "store_name": offer.get("store_name"),
+        "price": record.get("price"),
+        "old_price": record.get("old_price"),
+        "discount_pct": record.get("discount_pct"),
+        "product_url": offer.get("product_url"),
+        "availability": offer.get("availability"),
+        "data_confidence": offer.get("data_confidence"),
+        "reason": reason,
+    }
+
+
+def product_cards_from_records(records, limit=3):
+    return [
+        product_card_from_record(record)
+        for record in records[:limit]
+        if record.get("product") and record.get("offer")
+    ]
+
+
 def collect_offer_records(products, budget=None):
     records = []
 
@@ -1111,6 +1154,79 @@ def answer_question(question):
         "Non ho abbastanza informazioni per rispondere in modo affidabile usando "
         "solo i dati reali disponibili."
     )
+
+
+def products_for_question(question):
+    parsed = parse_question(question)
+
+    if parsed.intent in {"unknown"}:
+        return []
+
+    if parsed.intent == "discount_ranking":
+        products = search_products(
+            parsed.query,
+            limit=120,
+            category=parsed.category,
+            keywords=parsed.keywords,
+        )
+
+        if not products:
+            products = fetch_products()
+
+        records = [
+            record
+            for record in collect_offer_records(products)
+            if record["discount_pct"] is not None and record["discount_pct"] > 0
+        ]
+        records.sort(key=lambda item: (-item["discount_pct"], item["price"]))
+        return product_cards_from_records(records)
+
+    if parsed.intent == "best_under_budget":
+        products = search_products(
+            parsed.query,
+            limit=80,
+            category=parsed.category,
+            keywords=(),
+        )
+        records = collect_offer_records(products, budget=parsed.budget)
+        records.sort(key=lambda item: item["price"])
+        return product_cards_from_records(records)
+
+    product_limit = 40 if parsed.intent in {"cheapest_offer", "category_recommendation"} else DEFAULT_PRODUCT_LIMIT
+    products = search_products(
+        parsed.query,
+        limit=product_limit,
+        category=parsed.category,
+        keywords=parsed.keywords,
+    )
+
+    if not products:
+        return []
+
+    if parsed.intent == "when_to_buy":
+        record = offer_record(products[0], get_best_offer(products[0].get("id")))
+        return product_cards_from_records([record] if record else [])
+
+    records = collect_offer_records(products, budget=parsed.budget)
+
+    if parsed.intent == "discount_ranking":
+        records = [
+            record
+            for record in records
+            if record["discount_pct"] is not None and record["discount_pct"] > 0
+        ]
+        records.sort(key=lambda item: (-item["discount_pct"], item["price"]))
+    else:
+        records.sort(key=lambda item: item["price"])
+
+    return product_cards_from_records(records)
+
+
+def answer_question_payload(question):
+    return {
+        "answer": answer_question(question),
+        "products": products_for_question(question),
+    }
 
 
 def build_parser():

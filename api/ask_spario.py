@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from ai.shopping_assistant import answer_question
+from ai.shopping_assistant import answer_question_payload
 
 
 ERROR_ANSWER = "Spario AI non è disponibile al momento."
@@ -19,6 +19,7 @@ class AskSparioRequest(BaseModel):
 class AskSparioResponse(BaseModel):
     success: bool
     answer: str
+    products: list[dict] | None = None
 
 
 def get_cors_origins():
@@ -69,7 +70,11 @@ def validation_error_handler(request, exc):
     )
 
 
-@app.post("/api/ask-spario", response_model=AskSparioResponse)
+@app.post(
+    "/api/ask-spario",
+    response_model=AskSparioResponse,
+    response_model_exclude_none=True,
+)
 def ask_spario(payload: AskSparioRequest):
     try:
         question = (payload.question or "").strip()
@@ -77,8 +82,12 @@ def ask_spario(payload: AskSparioRequest):
         if not question:
             return AskSparioResponse(success=False, answer=ERROR_ANSWER)
 
-        answer = answer_question(question)
-        return AskSparioResponse(success=True, answer=answer)
+        assistant_payload = answer_question_payload(question)
+        return AskSparioResponse(
+            success=True,
+            answer=assistant_payload["answer"],
+            products=assistant_payload.get("products", []),
+        )
     except Exception:
         return AskSparioResponse(success=False, answer=ERROR_ANSWER)
 
