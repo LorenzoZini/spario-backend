@@ -7,6 +7,10 @@ from datetime import datetime, timezone
 
 from supabase import create_client
 
+from ai.llm_interpreter import (
+    generate_shopping_response_with_llm,
+    interpret_question_with_llm,
+)
 from importers.config import SUPABASE_KEY, SUPABASE_URL
 from predictions.price_predictor import predict_offer
 
@@ -25,6 +29,16 @@ HISTORY_COLUMNS = (
 VALID_CONFIDENCE_VALUES = {"alta", "media"}
 DEFAULT_PRODUCT_LIMIT = 5
 DEFAULT_HISTORY_MIN_POINTS = 3
+DEFAULT_CARD_LIMIT = 6
+ALLOWED_INTENTS = [
+    "cheapest_offer",
+    "best_under_budget",
+    "when_to_buy",
+    "category_recommendation",
+    "discount_ranking",
+    "product_search",
+    "unknown",
+]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -99,6 +113,24 @@ CATEGORY_FALLBACKS = {
     "gaming": ["tech", "gaming"],
 }
 
+BRAND_ALIASES = {
+    "apple": ["apple", "airpods", "iphone", "ipad", "macbook"],
+    "samsung": ["samsung", "galaxy"],
+    "sony": ["sony", "playstation", "ps5"],
+    "microsoft": ["microsoft", "xbox"],
+    "nintendo": ["nintendo", "switch"],
+    "xiaomi": ["xiaomi", "redmi", "poco"],
+    "oppo": ["oppo"],
+    "motorola": ["motorola", "moto"],
+    "honor": ["honor"],
+    "jbl": ["jbl"],
+    "lg": ["lg"],
+    "hp": ["hp"],
+    "lenovo": ["lenovo"],
+    "asus": ["asus"],
+    "acer": ["acer"],
+}
+
 SYNONYM_TERMS = {
     "ps5": ["ps5", "playstation", "playstation 5"],
     "playstation": ["ps5", "playstation", "playstation 5"],
@@ -116,6 +148,131 @@ SYNONYM_TERMS = {
     "speaker": ["casse", "speaker", "altoparlanti"],
 }
 
+PRODUCT_BRAND_TOKENS = {
+    "airpods",
+    "apple",
+    "iphone",
+    "ipad",
+    "macbook",
+    "playstation",
+    "ps5",
+    "xbox",
+    "nintendo",
+    "switch",
+    "galaxy",
+    "samsung",
+    "xiaomi",
+    "oppo",
+    "motorola",
+    "honor",
+    "sony",
+    "jbl",
+    "lg",
+    "hp",
+    "lenovo",
+    "asus",
+    "acer",
+    "redmi",
+    "poco",
+}
+
+SINGLE_TOKEN_PRODUCT_QUERIES = {
+    "airpods",
+    "iphone",
+    "ipad",
+    "macbook",
+    "ps5",
+    "playstation",
+    "xbox",
+    "nintendo",
+}
+
+PRODUCT_SPECIFIC_PHRASES = {
+    "airpods max",
+    "airpods pro",
+    "iphone 15",
+    "iphone 16",
+    "iphone 15 pro",
+    "iphone 16 pro",
+    "lg oled",
+    "jbl speaker",
+    "jbl bluetooth",
+    "playstation 5",
+    "samsung galaxy",
+}
+
+MODEL_TOKENS = {
+    "max",
+    "pro",
+    "mini",
+    "plus",
+    "ultra",
+    "oled",
+    "qled",
+    "qnED".lower(),
+    "ps5",
+    "m1",
+    "m2",
+    "m3",
+    "m4",
+    "15",
+    "16",
+}
+
+NEED_ALIASES = {
+    "wireless": ["wireless", "bluetooth", "senza fili", "tws"],
+    "anc": ["anc", "cancellazione rumore", "noise cancelling"],
+    "sport": ["palestra", "sport", "corsa", "allenamento", "impermeabile"],
+    "work": ["lavoro", "ufficio", "produttivita", "smart working"],
+    "student": ["universita", "studio", "scuola", "studenti"],
+    "gaming": ["gaming", "ps5", "playstation", "xbox", "nintendo"],
+    "tv_ps5": ["tv per ps5", "televisore per ps5", "hdmi 2 1", "120hz"],
+    "portable": ["portatile", "leggero", "mobilita"],
+    "cheap": ["economico", "economica", "economici", "economiche", "budget"],
+}
+
+SORT_PREFERENCES = {
+    "discount": ["sconto", "scontato", "scontata", "ribasso", "risparmio"],
+    "lowest_price": ["costa meno", "prezzo basso", "piu economico", "economico", "sotto", "budget"],
+    "best_value": ["miglior", "migliore", "migliori", "buono", "buona", "consigli", "consiglia"],
+    "timing": ["quando", "conviene", "aspettare", "previsione"],
+}
+
+GENERIC_PRODUCT_TOKENS = {
+    "bluetooth",
+    "wireless",
+    "cuffie",
+    "cuffia",
+    "auricolari",
+    "auricolare",
+    "smartphone",
+    "telefono",
+    "cellulare",
+    "tv",
+    "smart",
+    "televisore",
+    "laptop",
+    "notebook",
+    "portatile",
+    "casse",
+    "speaker",
+    "audio",
+}
+
+CATEGORY_ALIAS_BLOCKLIST = PRODUCT_BRAND_TOKENS | {
+    "bluetooth",
+    "wireless",
+    "smart",
+    "gaming",
+    "ps5",
+    "playstation",
+    "xbox",
+    "nintendo",
+    "switch",
+    "airpods",
+    "iphone",
+}
+
 STOPWORDS = {
     "a",
     "ad",
@@ -127,6 +284,8 @@ STOPWORDS = {
     "chi",
     "cosa",
     "costa",
+    "costano",
+    "costi",
     "comprare",
     "conviene",
     "con",
@@ -165,6 +324,7 @@ STOPWORDS = {
     "quando",
     "sotto",
     "su",
+    "tech",
     "un",
     "una",
 }
@@ -178,6 +338,11 @@ class ParsedQuestion:
     category: str | None = None
     budget: float | None = None
     keywords: tuple[str, ...] = ()
+    brand: str | None = None
+    product_keywords: tuple[str, ...] = ()
+    model_terms: tuple[str, ...] = ()
+    needs: tuple[str, ...] = ()
+    sort_preference: str = "relevance"
 
 
 def strip_accents(value):
@@ -318,6 +483,54 @@ def detect_budget(normalized_question):
     return None
 
 
+def detect_brand(normalized_question):
+    best_brand = None
+    best_score = 0
+
+    for brand, aliases in BRAND_ALIASES.items():
+        score = 0
+        for alias in aliases:
+            alias_normalized = normalize_text(alias)
+            if f" {alias_normalized} " in f" {normalized_question} ":
+                score += 3 if " " in alias_normalized else 2
+
+        if score > best_score:
+            best_brand = brand
+            best_score = score
+
+    return best_brand
+
+
+def detect_needs(normalized_question):
+    needs = []
+
+    for need, aliases in NEED_ALIASES.items():
+        for alias in aliases:
+            alias_normalized = normalize_text(alias)
+            if f" {alias_normalized} " in f" {normalized_question} ":
+                needs.append(need)
+                break
+
+    return tuple(needs)
+
+
+def detect_sort_preference(normalized_question, intent):
+    for preference, aliases in SORT_PREFERENCES.items():
+        if any(alias in normalized_question for alias in aliases):
+            return preference
+
+    if intent == "discount_ranking":
+        return "discount"
+
+    if intent in {"cheapest_offer", "best_under_budget"}:
+        return "lowest_price"
+
+    if intent == "when_to_buy":
+        return "timing"
+
+    return "relevance"
+
+
 def useful_keywords(normalized_question):
     tokens = normalized_question.split()
     keywords = []
@@ -336,6 +549,42 @@ def useful_keywords(normalized_question):
             keywords.append(token)
 
     return keywords
+
+
+def detect_model_terms(keywords):
+    terms = []
+
+    for keyword in keywords:
+        if keyword in MODEL_TOKENS or re.search(r"\d", keyword):
+            if keyword not in terms:
+                terms.append(keyword)
+
+    return tuple(terms)
+
+
+def detect_product_keywords(keywords, brand=None, category=None, needs=()):
+    product_keywords = []
+    generic_need_terms = set()
+
+    for need in needs:
+        for alias in NEED_ALIASES.get(need, []):
+            for alias_token in normalize_text(alias).split():
+                generic_need_terms.add(alias_token)
+
+    for keyword in keywords:
+        if keyword in STOPWORDS:
+            continue
+
+        if keyword in generic_need_terms and keyword not in PRODUCT_BRAND_TOKENS:
+            continue
+
+        if keyword in GENERIC_PRODUCT_TOKENS and keyword not in MODEL_TOKENS:
+            continue
+
+        if keyword not in product_keywords:
+            product_keywords.append(keyword)
+
+    return tuple(product_keywords[:8])
 
 
 def extract_query(normalized_question):
@@ -389,7 +638,7 @@ def detect_intent(normalized_question, category, budget, keywords):
     if any(token in normalized_question for token in cheapest_tokens):
         return "cheapest_offer"
 
-    if budget is not None and category:
+    if budget is not None:
         return "best_under_budget"
 
     if category and any(token in normalized_question for token in recommendation_tokens):
@@ -407,13 +656,131 @@ def detect_intent(normalized_question, category, budget, keywords):
     return "unknown"
 
 
-def parse_question(question):
+def parsed_question_payload(parsed):
+    return {
+        "intent": parsed.intent,
+        "category": parsed.category,
+        "brand": parsed.brand,
+        "budget_max": parsed.budget,
+        "query": parsed.query,
+        "keywords": list(parsed.keywords),
+        "product_keywords": list(parsed.product_keywords),
+        "model_terms": list(parsed.model_terms),
+        "needs": list(parsed.needs),
+        "sort_preference": parsed.sort_preference,
+    }
+
+
+def clean_llm_keywords(value):
+    if not isinstance(value, list):
+        return ()
+
+    keywords = []
+    for item in value:
+        normalized = normalize_text(item)
+        if not normalized:
+            continue
+
+        for keyword in useful_keywords(normalized):
+            if keyword not in keywords:
+                keywords.append(keyword)
+
+    return tuple(keywords[:8])
+
+
+def parsed_question_from_llm(question, fallback, interpreted):
+    if not isinstance(interpreted, dict):
+        return fallback
+
+    intent = interpreted.get("intent")
+    if intent not in ALLOWED_INTENTS:
+        intent = fallback.intent
+
+    category = interpreted.get("category")
+    if category not in CATEGORY_ALIASES:
+        category = fallback.category
+
+    budget = parse_price(interpreted.get("budget_max", interpreted.get("budget")))
+    if budget is None:
+        budget = fallback.budget
+    elif budget <= 0 or budget > 50000:
+        budget = fallback.budget
+
+    query = normalize_text(interpreted.get("query"))
+    if not query:
+        query = fallback.query
+
+    keywords = clean_llm_keywords(interpreted.get("keywords"))
+    if not keywords and query:
+        keywords = tuple(useful_keywords(query))
+    if not keywords:
+        keywords = fallback.keywords
+
+    brand = interpreted.get("brand")
+    if brand not in BRAND_ALIASES:
+        brand = fallback.brand
+
+    product_keywords = clean_llm_keywords(interpreted.get("product_keywords"))
+    if not product_keywords:
+        product_keywords = fallback.product_keywords
+
+    model_terms = clean_llm_keywords(interpreted.get("model_terms"))
+    if not model_terms:
+        model_terms = fallback.model_terms
+
+    needs = interpreted.get("needs")
+    if isinstance(needs, list):
+        needs = tuple(
+            need
+            for need in needs[:8]
+            if isinstance(need, str) and need in NEED_ALIASES
+        )
+    else:
+        needs = ()
+    if not needs:
+        needs = fallback.needs
+
+    sort_preference = interpreted.get("sort_preference")
+    if sort_preference not in {"relevance", "lowest_price", "best_value", "discount", "timing"}:
+        sort_preference = fallback.sort_preference
+
+    normalized = normalize_text(question)
+    return ParsedQuestion(
+        intent=intent,
+        query=query,
+        normalized_question=normalized,
+        category=category,
+        budget=budget,
+        keywords=keywords,
+        brand=brand,
+        product_keywords=product_keywords,
+        model_terms=model_terms,
+        needs=needs,
+        sort_preference=sort_preference,
+    )
+
+
+def parse_question_rule_based(question):
     normalized = normalize_text(question)
     category = detect_category(normalized)
     budget = detect_budget(normalized)
     keywords = tuple(useful_keywords(normalized))
     query = extract_query(normalized)
     intent = detect_intent(normalized, category, budget, keywords)
+    brand = detect_brand(normalized)
+    needs = detect_needs(normalized)
+
+    if category == "tv" and brand == "sony" and "sony" not in keywords:
+        brand = None
+
+    model_terms = detect_model_terms(keywords)
+    product_keywords = detect_product_keywords(
+        keywords,
+        brand=brand,
+        category=category,
+        needs=needs,
+    )
+    sort_preference = detect_sort_preference(normalized, intent)
 
     return ParsedQuestion(
         intent=intent,
@@ -422,7 +789,24 @@ def parse_question(question):
         category=category,
         budget=budget,
         keywords=keywords,
+        brand=brand,
+        product_keywords=product_keywords,
+        model_terms=model_terms,
+        needs=needs,
+        sort_preference=sort_preference,
     )
+
+
+def parse_question(question):
+    fallback = parse_question_rule_based(question)
+    interpreted = interpret_question_with_llm(
+        question=question,
+        fallback_payload=parsed_question_payload(fallback),
+        allowed_intents=ALLOWED_INTENTS,
+        allowed_categories=list(CATEGORY_ALIASES.keys()),
+    )
+
+    return parsed_question_from_llm(question, fallback, interpreted)
 
 
 def category_values_for_search(category):
@@ -442,6 +826,275 @@ def product_search_blob(product):
             ]
         )
     )
+
+
+def text_contains_term(text, term):
+    term = normalize_text(term)
+    if not term:
+        return False
+
+    if " " in term:
+        return term in text
+
+    return f" {term} " in f" {text} "
+
+
+def product_search_tokens(product):
+    return set(product_search_blob(product).split())
+
+
+def query_product_tokens(query, keywords=None):
+    normalized = normalize_text(
+        " ".join([query or "", " ".join(keywords or [])])
+    )
+    tokens = []
+
+    for token in normalized.split():
+        if token in STOPWORDS:
+            continue
+
+        if len(token) < 2 and not token.isdigit():
+            continue
+
+        if token not in tokens:
+            tokens.append(token)
+
+    return tokens
+
+
+def looks_product_specific(query, keywords=None):
+    tokens = query_product_tokens(query, keywords)
+    if not tokens:
+        return False
+
+    normalized = normalize_text(" ".join([query or "", " ".join(keywords or [])]))
+    if any(phrase in normalized for phrase in PRODUCT_SPECIFIC_PHRASES):
+        return True
+
+    if any(token in SINGLE_TOKEN_PRODUCT_QUERIES for token in tokens):
+        return True
+
+    has_brand = any(token in PRODUCT_BRAND_TOKENS for token in tokens)
+    non_generic_tokens = [
+        token
+        for token in tokens
+        if token not in PRODUCT_BRAND_TOKENS and token not in GENERIC_PRODUCT_TOKENS
+    ]
+
+    return has_brand and bool(non_generic_tokens)
+
+
+def exact_product_match_score(product, query, keywords=None):
+    tokens = query_product_tokens(query, keywords)
+    if not tokens or not looks_product_specific(query, keywords):
+        return 0
+
+    blob = product_search_blob(product)
+    blob_tokens = product_search_tokens(product)
+
+    required_tokens = [
+        token
+        for token in tokens
+        if token not in GENERIC_PRODUCT_TOKENS
+    ]
+
+    if not required_tokens:
+        required_tokens = tokens
+
+    if not all(token in blob_tokens for token in required_tokens):
+        return 0
+
+    score = 1000 + (len(required_tokens) * 100)
+    exact_phrase = " ".join(required_tokens)
+
+    if exact_phrase and exact_phrase in blob:
+        score += 500
+
+    product_name = normalize_text(product.get("name"))
+    if exact_phrase and exact_phrase in product_name:
+        score += 300
+
+    if product_name.startswith(exact_phrase):
+        score += 150
+
+    return score
+
+
+def parsed_search_tokens(parsed):
+    tokens = []
+
+    for source in (
+        parsed.product_keywords,
+        parsed.model_terms,
+        parsed.keywords,
+        parsed.needs,
+    ):
+        for token in source:
+            for normalized in normalize_text(token).split():
+                if normalized in STOPWORDS:
+                    continue
+
+                if normalized not in tokens:
+                    tokens.append(normalized)
+
+    return tokens
+
+
+def product_specific_required_tokens(parsed):
+    tokens = []
+
+    for token in parsed_search_tokens(parsed):
+        if token in GENERIC_PRODUCT_TOKENS and token not in MODEL_TOKENS:
+            continue
+
+        if token in NEED_ALIASES:
+            continue
+
+        if token not in tokens:
+            tokens.append(token)
+
+    return tokens
+
+
+def brand_matches_product(product, brand):
+    if not brand:
+        return True
+
+    blob = product_search_blob(product)
+    return any(
+        normalize_text(alias) in blob
+        for alias in BRAND_ALIASES.get(brand, [brand])
+    )
+
+
+def need_matches_product(product, need):
+    blob = product_search_blob(product)
+
+    if need == "cheap":
+        return True
+
+    return any(
+        normalize_text(alias) in blob
+        for alias in NEED_ALIASES.get(need, [])
+    )
+
+
+def looks_product_specific_parsed(parsed):
+    if parsed.category == "tv" and "tv_ps5" in parsed.needs:
+        return False
+
+    if looks_product_specific(parsed.query, parsed.product_keywords or parsed.keywords):
+        return True
+
+    if parsed.model_terms and (parsed.brand or parsed.product_keywords):
+        return True
+
+    required_tokens = product_specific_required_tokens(parsed)
+    return len(required_tokens) >= 2 and bool(parsed.brand)
+
+
+def hybrid_product_score(product, parsed):
+    blob = product_search_blob(product)
+    blob_tokens = product_search_tokens(product)
+    product_name = normalize_text(product.get("name"))
+    score = 0.0
+
+    if parsed.category and not category_matches(product, parsed.category):
+        return 0
+
+    exact_score = exact_product_match_score(
+        product,
+        parsed.query,
+        keywords=parsed.product_keywords or parsed.keywords,
+    )
+    if exact_score:
+        score += exact_score
+
+    if parsed.category:
+        score += 90
+
+    if parsed.brand:
+        if brand_matches_product(product, parsed.brand):
+            score += 130
+        elif looks_product_specific_parsed(parsed):
+            return 0
+
+    required_tokens = product_specific_required_tokens(parsed)
+    if looks_product_specific_parsed(parsed) and required_tokens:
+        if not all(token in blob_tokens for token in required_tokens):
+            return 0
+        score += 120 * len(required_tokens)
+
+    search_tokens = parsed_search_tokens(parsed)
+    matched_tokens = []
+    for token in search_tokens:
+        if token in blob_tokens:
+            matched_tokens.append(token)
+            if token in parsed.model_terms:
+                score += 85
+            elif token in parsed.product_keywords:
+                score += 70
+            elif token in parsed.needs:
+                score += 45
+            else:
+                score += 35
+        elif token in blob:
+            matched_tokens.append(token)
+            score += 18
+
+    phrase = " ".join(
+        token
+        for token in parsed.product_keywords
+        if token not in GENERIC_PRODUCT_TOKENS
+    )
+    if phrase and phrase in product_name:
+        score += 180
+    elif parsed.query and normalize_text(parsed.query) in product_name:
+        score += 120
+
+    for need in parsed.needs:
+        if need_matches_product(product, need):
+            score += 55
+
+    if parsed.keywords and not matched_tokens and not parsed.category and not parsed.brand:
+        return 0
+
+    return score
+
+
+def retrieve_products(parsed, limit=80):
+    products = fetch_products()
+    scored = []
+
+    for product in products:
+        score = hybrid_product_score(product, parsed)
+        if score <= 0:
+            continue
+
+        scored.append((score, product))
+
+    if parsed.brand:
+        brand_scored = [
+            item
+            for item in scored
+            if brand_matches_product(item[1], parsed.brand)
+        ]
+        if brand_scored:
+            scored = brand_scored
+
+    if not scored and looks_product_specific_parsed(parsed):
+        return []
+
+    if not scored and parsed.category:
+        for product in products:
+            if category_matches(product, parsed.category):
+                scored.append((20, product))
+
+    if not scored and parsed.budget is not None:
+        scored = [(1, product) for product in products]
+
+    scored.sort(key=lambda item: (-item[0], product_search_blob(item[1])))
+    return [product for _, product in scored[:limit]]
 
 
 def expanded_terms(keywords, category=None):
@@ -475,7 +1128,11 @@ def category_matches(product, category):
         return True
 
     blob = product_search_blob(product)
-    return any(alias in blob for alias in CATEGORY_ALIASES.get(category, []))
+    return any(
+        text_contains_term(blob, alias)
+        for alias in CATEGORY_ALIASES.get(category, [])
+        if normalize_text(alias) not in CATEGORY_ALIAS_BLOCKLIST
+    )
 
 
 def score_product(product, query, category=None, keywords=None):
@@ -527,24 +1184,29 @@ def score_product(product, query, category=None, keywords=None):
 
 
 def search_products(query, limit=DEFAULT_PRODUCT_LIMIT, category=None, keywords=None):
-    products = fetch_products()
-    scored = []
-
-    for product in products:
-        score = score_product(
-            product,
-            query=query,
+    normalized_query = normalize_text(query)
+    keywords = tuple(keywords or useful_keywords(normalized_query))
+    brand = detect_brand(normalized_query)
+    needs = detect_needs(normalized_query)
+    parsed = ParsedQuestion(
+        intent="product_search",
+        query=normalized_query,
+        normalized_question=normalized_query,
+        category=category,
+        budget=None,
+        keywords=keywords,
+        brand=brand,
+        product_keywords=detect_product_keywords(
+            keywords,
+            brand=brand,
             category=category,
-            keywords=keywords,
-        )
-        if score <= 0:
-            continue
-
-        scored.append((score, product))
-
-    scored.sort(key=lambda item: (-item[0], product_search_blob(item[1])))
-
-    return [product for _, product in scored[:limit]]
+            needs=needs,
+        ),
+        model_terms=detect_model_terms(keywords),
+        needs=needs,
+        sort_preference="relevance",
+    )
+    return retrieve_products(parsed, limit=limit)
 
 
 def is_offer_usable(offer):
@@ -571,9 +1233,9 @@ def store_lookup():
     return {store.get("id"): store for store in fetch_stores()}
 
 
-def get_best_offer(product_id):
+def get_best_offer(product_id, stores_by_id=None):
     offers = fetch_offers_for_product(product_id)
-    stores_by_id = store_lookup()
+    stores_by_id = stores_by_id or store_lookup()
     usable_offers = []
 
     for offer in offers:
@@ -662,19 +1324,33 @@ def product_card_from_record(record, reason=None):
     }
 
 
-def product_cards_from_records(records, limit=3):
-    return [
-        product_card_from_record(record)
-        for record in records[:limit]
-        if record.get("product") and record.get("offer")
-    ]
+def product_cards_from_records(records, limit=DEFAULT_CARD_LIMIT, reasons_by_product_id=None):
+    reasons_by_product_id = reasons_by_product_id or {}
+    cards = []
+
+    for record in records:
+        if len(cards) >= limit:
+            break
+
+        if not record.get("product") or not record.get("offer"):
+            continue
+
+        product_id = record["product"].get("id")
+        reason = reasons_by_product_id.get(product_id)
+        cards.append(product_card_from_record(record, reason=reason))
+
+    return cards
 
 
 def collect_offer_records(products, budget=None):
     records = []
+    stores_by_id = store_lookup()
 
     for product in products:
-        record = offer_record(product, get_best_offer(product.get("id")))
+        record = offer_record(
+            product,
+            get_best_offer(product.get("id"), stores_by_id=stores_by_id),
+        )
         if not record:
             continue
 
@@ -684,6 +1360,186 @@ def collect_offer_records(products, budget=None):
         records.append(record)
 
     return records
+
+
+def confidence_score(value):
+    if value == "alta":
+        return 20
+
+    if value == "media":
+        return 10
+
+    return 0
+
+
+def price_component(price, min_price, max_price):
+    if price is None:
+        return 0
+
+    if max_price <= min_price:
+        return 35
+
+    return ((max_price - price) / (max_price - min_price)) * 70
+
+
+def record_hybrid_score(record, parsed, min_price, max_price):
+    product = record["product"]
+    offer = record["offer"]
+    score = hybrid_product_score(product, parsed)
+    price = record.get("price")
+
+    if parsed.sort_preference in {"lowest_price", "discount"}:
+        score += price_component(price, min_price, max_price)
+    else:
+        score += price_component(price, min_price, max_price) * 0.35
+
+    if parsed.budget is not None and price is not None:
+        if price <= parsed.budget:
+            score += 50
+            score += max(0, 25 - ((parsed.budget - price) / max(parsed.budget, 1)) * 20)
+        else:
+            score -= 250
+
+    discount_pct = record.get("discount_pct") or 0
+    if parsed.sort_preference == "discount" or parsed.intent == "discount_ranking":
+        score += min(160, discount_pct * 2.5)
+    else:
+        score += min(65, discount_pct * 1.2)
+
+    score += confidence_score(offer.get("data_confidence"))
+    score += min(25, (offer.get("offers_checked") or 1) * 5)
+
+    if normalize_text(offer.get("availability")) == "available":
+        score += 15
+
+    if parsed.intent == "when_to_buy":
+        score += 20
+
+    return score
+
+
+def similar_product_key(name):
+    color_tokens = {
+        "nero",
+        "nera",
+        "bianco",
+        "bianca",
+        "blu",
+        "rosso",
+        "rossa",
+        "verde",
+        "argento",
+        "silver",
+        "grigio",
+        "grigia",
+        "arancione",
+        "rosa",
+        "yellow",
+        "black",
+        "white",
+    }
+    tokens = [
+        token
+        for token in normalize_text(name).split()
+        if token not in color_tokens and token not in STOPWORDS
+    ]
+    return " ".join(tokens[:10])
+
+
+def dedupe_similar_records(records, parsed):
+    if looks_product_specific_parsed(parsed):
+        return records
+
+    deduped = []
+    seen_ids = set()
+    seen_names = set()
+
+    for record in records:
+        product = record["product"]
+        product_id = product.get("id")
+        name_key = similar_product_key(product.get("name"))
+
+        if product_id in seen_ids or name_key in seen_names:
+            continue
+
+        deduped.append(record)
+        seen_ids.add(product_id)
+        seen_names.add(name_key)
+
+    return deduped
+
+
+def rank_offer_records(records, parsed):
+    if not records:
+        return []
+
+    prices = [
+        record.get("price")
+        for record in records
+        if record.get("price") is not None
+    ]
+    min_price = min(prices) if prices else 0
+    max_price = max(prices) if prices else min_price
+
+    for record in records:
+        record["ranking_score"] = record_hybrid_score(
+            record,
+            parsed,
+            min_price=min_price,
+            max_price=max_price,
+        )
+
+    records.sort(
+        key=lambda item: (
+            -item.get("ranking_score", 0),
+            item.get("price") if item.get("price") is not None else float("inf"),
+            product_search_blob(item["product"]),
+        )
+    )
+    return dedupe_similar_records(records, parsed)
+
+
+def products_and_records_for_parsed(parsed):
+    if parsed.intent == "unknown":
+        return [], []
+
+    if parsed.intent == "discount_ranking":
+        products = retrieve_products(parsed, limit=160)
+
+        if not products:
+            products = fetch_products()
+
+        records = [
+            record
+            for record in collect_offer_records(products)
+            if record["discount_pct"] is not None and record["discount_pct"] > 0
+        ]
+        records = rank_offer_records(records, parsed)
+        return products, records
+
+    if parsed.intent == "best_under_budget":
+        limit = 300 if not parsed.category and not parsed.keywords else 160
+        products = retrieve_products(parsed, limit=limit)
+        records = collect_offer_records(products, budget=parsed.budget)
+        records = rank_offer_records(records, parsed)
+        return products, records
+
+    product_limit = 40 if parsed.intent in {"cheapest_offer", "category_recommendation"} else DEFAULT_PRODUCT_LIMIT
+    if looks_product_specific_parsed(parsed):
+        product_limit = max(product_limit, 20)
+
+    products = retrieve_products(parsed, limit=product_limit)
+
+    if not products:
+        return [], []
+
+    if parsed.intent == "when_to_buy":
+        record = offer_record(products[0], get_best_offer(products[0].get("id")))
+        return products, [record] if record else []
+
+    records = collect_offer_records(products, budget=parsed.budget)
+    records = rank_offer_records(records, parsed)
+    return products, records
 
 
 def is_history_usable(row):
@@ -783,6 +1639,82 @@ def category_label(category):
         "gaming": "prodotti gaming",
     }
     return labels.get(category, "prodotti")
+
+
+def display_product_token(token):
+    labels = {
+        "airpods": "AirPods",
+        "iphone": "iPhone",
+        "ipad": "iPad",
+        "macbook": "MacBook",
+        "ps5": "PS5",
+        "playstation": "PlayStation",
+        "xbox": "Xbox",
+        "nintendo": "Nintendo",
+    }
+    return labels.get(token, token.upper() if token.isdigit() else token.capitalize())
+
+
+def product_specific_query_label(parsed):
+    tokens = [
+        token
+        for token in query_product_tokens(parsed.query, parsed.keywords)
+        if token not in GENERIC_PRODUCT_TOKENS
+    ]
+
+    if not tokens:
+        tokens = query_product_tokens(parsed.query, parsed.keywords)
+
+    return " ".join(display_product_token(token) for token in tokens[:4])
+
+
+def answer_product_specific_match(parsed, records):
+    if not records:
+        return "Ho trovato questo prodotto tra quelli tracciati, ma non ho offerte valide al momento."
+
+    if len(records) == 1:
+        return "Ho trovato questo prodotto tra quelli tracciati."
+
+    return "Ho trovato questi prodotti tra quelli tracciati."
+
+
+def short_answer_for_results(parsed, products, records, original_question):
+    if not products:
+        return no_products_response(parsed, original_question)
+
+    if looks_product_specific_parsed(parsed):
+        return answer_product_specific_match(parsed, records)
+
+    if not records:
+        return (
+            "Ho trovato prodotti coerenti, ma non offerte valide al momento.\n"
+            f"{followup_text()}"
+        )
+
+    if parsed.intent == "discount_ranking" or parsed.sort_preference == "discount":
+        return "Migliori sconti reali trovati.\nLe card mostrano solo offerte con sconto calcolabile."
+
+    if parsed.intent == "when_to_buy":
+        return answer_when_to_buy(parsed, products)
+
+    if parsed.budget is not None:
+        return (
+            f"Ho trovato {min(len(records), DEFAULT_CARD_LIMIT)} opzioni sotto "
+            f"{format_price(parsed.budget)}.\n"
+            "Le card sono ordinate per rilevanza, prezzo e qualita del dato."
+        )
+
+    if parsed.category:
+        return (
+            f"Ho trovato {min(len(records), DEFAULT_CARD_LIMIT)} risultati per "
+            f"{category_label(parsed.category)}.\n"
+            "Le card sono ordinate per rilevanza e valore reale."
+        )
+
+    return (
+        f"Ho trovato {min(len(records), DEFAULT_CARD_LIMIT)} prodotti rilevanti.\n"
+        "Le card mostrano le migliori offerte reali disponibili."
+    )
 
 
 def available_categories_text():
@@ -1110,9 +2042,7 @@ def answer_product_search(parsed, products):
     return "\n".join(lines)
 
 
-def answer_question(question):
-    parsed = parse_question(question)
-
+def answer_question_from_parsed(question, parsed):
     if parsed.intent == "unknown":
         return (
             "Non ho capito bene la domanda.\n"
@@ -1121,111 +2051,173 @@ def answer_question(question):
             "o \"quale prodotto ha lo sconto migliore\"."
         )
 
-    if parsed.intent == "discount_ranking":
-        return answer_discount_ranking(parsed)
+    products, records = products_and_records_for_parsed(parsed)
+    return short_answer_for_results(parsed, products, records, question)
 
-    if parsed.intent == "best_under_budget":
-        return answer_best_under_budget(parsed)
 
-    product_limit = 40 if parsed.intent in {"cheapest_offer", "category_recommendation"} else DEFAULT_PRODUCT_LIMIT
-    products = search_products(
-        parsed.query,
-        limit=product_limit,
-        category=parsed.category,
-        keywords=parsed.keywords,
-    )
-
-    if not products:
-        return no_products_response(parsed, question)
-
-    if parsed.intent == "cheapest_offer":
-        return answer_cheapest_offer(parsed, products)
-
-    if parsed.intent == "when_to_buy":
-        return answer_when_to_buy(parsed, products)
-
-    if parsed.intent == "category_recommendation":
-        return answer_category_recommendation(parsed)
-
-    if parsed.intent == "product_search":
-        return answer_product_search(parsed, products)
-
-    return (
-        "Non ho abbastanza informazioni per rispondere in modo affidabile usando "
-        "solo i dati reali disponibili."
-    )
+def answer_question(question):
+    return answer_question_from_parsed(question, parse_question(question))
 
 
 def products_for_question(question):
     parsed = parse_question(question)
-
-    if parsed.intent in {"unknown"}:
-        return []
-
-    if parsed.intent == "discount_ranking":
-        products = search_products(
-            parsed.query,
-            limit=120,
-            category=parsed.category,
-            keywords=parsed.keywords,
-        )
-
-        if not products:
-            products = fetch_products()
-
-        records = [
-            record
-            for record in collect_offer_records(products)
-            if record["discount_pct"] is not None and record["discount_pct"] > 0
-        ]
-        records.sort(key=lambda item: (-item["discount_pct"], item["price"]))
-        return product_cards_from_records(records)
-
-    if parsed.intent == "best_under_budget":
-        products = search_products(
-            parsed.query,
-            limit=80,
-            category=parsed.category,
-            keywords=(),
-        )
-        records = collect_offer_records(products, budget=parsed.budget)
-        records.sort(key=lambda item: item["price"])
-        return product_cards_from_records(records)
-
-    product_limit = 40 if parsed.intent in {"cheapest_offer", "category_recommendation"} else DEFAULT_PRODUCT_LIMIT
-    products = search_products(
-        parsed.query,
-        limit=product_limit,
-        category=parsed.category,
-        keywords=parsed.keywords,
-    )
-
-    if not products:
-        return []
-
-    if parsed.intent == "when_to_buy":
-        record = offer_record(products[0], get_best_offer(products[0].get("id")))
-        return product_cards_from_records([record] if record else [])
-
-    records = collect_offer_records(products, budget=parsed.budget)
-
-    if parsed.intent == "discount_ranking":
-        records = [
-            record
-            for record in records
-            if record["discount_pct"] is not None and record["discount_pct"] > 0
-        ]
-        records.sort(key=lambda item: (-item["discount_pct"], item["price"]))
-    else:
-        records.sort(key=lambda item: item["price"])
-
+    _, records = products_and_records_for_parsed(parsed)
     return product_cards_from_records(records)
 
 
+def sanitize_llm_reason(reason):
+    if not isinstance(reason, str):
+        return None
+
+    reason = re.sub(r"\s+", " ", reason).strip()
+    if not reason:
+        return None
+
+    if "€" in reason:
+        return None
+
+    if len(reason) > 140:
+        reason = reason[:137].rstrip() + "..."
+
+    return reason
+
+
+def llm_reasons_by_product_id(llm_response, valid_product_ids):
+    reasons = {}
+
+    for item in llm_response.get("product_reasons") or []:
+        if not isinstance(item, dict):
+            continue
+
+        product_id = item.get("product_id")
+        if product_id not in valid_product_ids:
+            continue
+
+        reason = sanitize_llm_reason(item.get("reason"))
+        if reason:
+            reasons[product_id] = reason
+
+    return reasons
+
+
+def ranked_cards_from_llm(candidate_cards, llm_response):
+    cards_by_id = {
+        card.get("product_id"): card
+        for card in candidate_cards
+        if card.get("product_id")
+    }
+    valid_product_ids = set(cards_by_id.keys())
+    reasons = llm_reasons_by_product_id(llm_response, valid_product_ids)
+    ranked_cards = []
+    seen_product_ids = set()
+
+    for product_id in llm_response.get("ranked_product_ids") or []:
+        if product_id not in cards_by_id or product_id in seen_product_ids:
+            continue
+
+        card = dict(cards_by_id[product_id])
+        if product_id in reasons:
+            card["reason"] = reasons[product_id]
+        ranked_cards.append(card)
+        seen_product_ids.add(product_id)
+
+        if len(ranked_cards) >= DEFAULT_CARD_LIMIT:
+            break
+
+    for card in candidate_cards:
+        product_id = card.get("product_id")
+        if product_id in seen_product_ids:
+            continue
+
+        card = dict(card)
+        if product_id in reasons:
+            card["reason"] = reasons[product_id]
+        ranked_cards.append(card)
+        seen_product_ids.add(product_id)
+
+        if len(ranked_cards) >= DEFAULT_CARD_LIMIT:
+            break
+
+    return ranked_cards
+
+
+def concise_answer_from_cards(parsed, cards):
+    if not cards:
+        return None
+
+    category = category_label(parsed.category) if parsed.category else "risultati"
+    budget_text = f" sotto {format_price(parsed.budget)}" if parsed.budget else ""
+
+    if parsed.intent == "discount_ranking":
+        title = "Migliori sconti reali trovati"
+    elif parsed.intent == "when_to_buy":
+        title = "Prezzo e storico disponibili"
+    elif parsed.intent == "cheapest_offer":
+        title = "Prezzo piu basso trovato"
+    else:
+        title = f"{category}{budget_text}: {len(cards)} opzioni reali"
+
+    summary = "Le card sotto usano solo prodotti e offerte reali presenti in Supabase."
+    return f"{title}\n{summary}"
+
+
+def safe_llm_answer(llm_response, parsed, cards):
+    if not isinstance(llm_response, dict):
+        return None
+
+    title = re.sub(r"\s+", " ", str(llm_response.get("answer_title") or "")).strip()
+    summary = re.sub(r"\s+", " ", str(llm_response.get("answer_summary") or "")).strip()
+
+    if not title:
+        return None
+
+    text = f"{title}\n{summary}" if summary else title
+
+    if "€" in text:
+        return concise_answer_from_cards(parsed, cards)
+
+    if len(text) > 260:
+        text = text[:257].rstrip() + "..."
+
+    return text
+
+
 def answer_question_payload(question):
+    parsed = parse_question(question)
+    _, records = products_and_records_for_parsed(parsed)
+    candidate_cards = product_cards_from_records(records, limit=12)
+    fallback_answer = answer_question_from_parsed(question, parsed)
+
+    if not candidate_cards:
+        return {
+            "answer": fallback_answer,
+            "products": [],
+        }
+
+    if looks_product_specific_parsed(parsed):
+        return {
+            "answer": answer_product_specific_match(parsed, records),
+            "products": candidate_cards[:DEFAULT_CARD_LIMIT],
+        }
+
+    llm_response = generate_shopping_response_with_llm(
+        question=question,
+        parsed_payload=parsed_question_payload(parsed),
+        product_cards=candidate_cards,
+    )
+
+    if llm_response:
+        products = ranked_cards_from_llm(candidate_cards, llm_response)
+        answer = safe_llm_answer(llm_response, parsed, products)
+        if not answer:
+            answer = concise_answer_from_cards(parsed, products) or fallback_answer
+    else:
+        products = candidate_cards[:DEFAULT_CARD_LIMIT]
+        answer = fallback_answer
+
     return {
-        "answer": answer_question(question),
-        "products": products_for_question(question),
+        "answer": answer,
+        "products": products,
     }
 
 
