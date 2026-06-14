@@ -1,7 +1,13 @@
 import json
-import os
 
 import requests
+
+from core.config import (
+    get_llm_intent_enabled,
+    get_llm_model,
+    get_llm_timeout_seconds,
+    get_openai_api_key,
+)
 
 
 OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
@@ -10,17 +16,17 @@ DEFAULT_TIMEOUT_SECONDS = 5.0
 
 
 def llm_enabled():
-    enabled = os.getenv("SPARIO_ENABLE_LLM_INTENT", "").strip().lower()
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    enabled = get_llm_intent_enabled().strip().lower()
+    api_key = (get_openai_api_key() or "").strip()
     return enabled in {"1", "true", "yes", "on"} and bool(api_key)
 
 
 def llm_model():
-    return os.getenv("SPARIO_LLM_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    return get_llm_model().strip() or DEFAULT_MODEL
 
 
 def llm_timeout():
-    raw_timeout = os.getenv("SPARIO_LLM_TIMEOUT_SECONDS", "").strip()
+    raw_timeout = get_llm_timeout_seconds().strip()
 
     if not raw_timeout:
         return DEFAULT_TIMEOUT_SECONDS
@@ -47,7 +53,7 @@ def call_openai_json(messages, schema, max_tokens=350):
     if not llm_enabled():
         return None
 
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    api_key = (get_openai_api_key() or "").strip()
     payload = {
         "model": llm_model(),
         "messages": messages,

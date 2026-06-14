@@ -1,12 +1,10 @@
-import os
 import base64
 import requests
-from dotenv import load_dotenv
 
-load_dotenv()
+from core.config import EBAY_CLIENT_ID, EBAY_CLIENT_SECRET
 
-client_id = os.getenv("EBAY_CLIENT_ID")
-client_secret = os.getenv("EBAY_CLIENT_SECRET")
+client_id = EBAY_CLIENT_ID
+client_secret = EBAY_CLIENT_SECRET
 
 # OAuth Token
 credentials = f"{client_id}:{client_secret}"

@@ -1,12 +1,10 @@
-from supabase import create_client
 import uuid
 import random
 
-url = "https://bbnjiqfrqafcqbsemhff.supabase.co"
+from core.supabase_client import get_supabase_client
 
-key = "sb_publishable_ZqAmZKzXfQvdWvmTTWnAhg_O4Qcu4qo"
 
-supabase = create_client(url, key)
+supabase = get_supabase_client()
 
 stores = supabase.table("stores").select("*").execute().data
 

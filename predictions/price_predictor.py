@@ -4,9 +4,7 @@ import statistics
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
-from supabase import create_client
-
-from importers.config import SUPABASE_KEY, SUPABASE_URL
+from core.supabase_client import get_supabase_client
 
 
 VALID_CONFIDENCE_VALUES = {"alta", "media"}
@@ -23,7 +21,7 @@ HISTORY_COLUMNS = (
 )
 STORE_COLUMNS = "id,name"
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = get_supabase_client()
 
 
 @dataclass

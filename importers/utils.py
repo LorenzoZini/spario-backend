@@ -1,8 +1,7 @@
 import re
-from supabase import create_client
-from importers.config import SUPABASE_URL, SUPABASE_KEY
+from core.supabase_client import get_supabase_client
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = get_supabase_client()
 
 
 def canonicalize_product_name(name):

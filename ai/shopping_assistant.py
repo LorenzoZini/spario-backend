@@ -5,13 +5,11 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from supabase import create_client
-
 from ai.llm_interpreter import (
     generate_shopping_response_with_llm,
     interpret_question_with_llm,
 )
-from importers.config import SUPABASE_KEY, SUPABASE_URL
+from core.supabase_client import get_supabase_client
 from predictions.price_predictor import predict_offer
 
 
@@ -40,7 +38,7 @@ ALLOWED_INTENTS = [
     "unknown",
 ]
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = get_supabase_client()
 
 
 CATEGORY_ALIASES = {

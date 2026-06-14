@@ -1,7 +1,12 @@
+import os
 import unittest
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+
+
+os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
+os.environ.setdefault("SUPABASE_KEY", "test-key")
 
 from api.ask_spario import ERROR_ANSWER, app
 

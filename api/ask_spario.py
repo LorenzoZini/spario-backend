@@ -1,5 +1,3 @@
-import os
-
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,6 +5,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ai.shopping_assistant import answer_question_payload
+from core.config import CORS_ORIGINS, HOST, PORT
 
 
 ERROR_ANSWER = "Spario AI non è disponibile al momento."
@@ -23,7 +22,7 @@ class AskSparioResponse(BaseModel):
 
 
 def get_cors_origins():
-    raw_origins = os.getenv("CORS_ORIGINS", "*")
+    raw_origins = CORS_ORIGINS
 
     if raw_origins.strip() == "*":
         return ["*"]
@@ -95,10 +94,7 @@ def ask_spario(payload: AskSparioRequest):
 def main():
     import uvicorn
 
-    host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "8000"))
-
-    uvicorn.run("api.ask_spario:app", host=host, port=port)
+    uvicorn.run("api.ask_spario:app", host=HOST, port=int(PORT))
 
 
 if __name__ == "__main__":
