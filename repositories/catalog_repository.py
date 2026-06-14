@@ -57,6 +57,26 @@ def fetch_offers_for_product(product_id):
     return response.data or []
 
 
+def fetch_offers_for_product_ids(product_ids):
+    unique_product_ids = list(dict.fromkeys(
+        product_id
+        for product_id in product_ids
+        if product_id
+    ))
+
+    if not unique_product_ids:
+        return []
+
+    response = (
+        get_supabase_client()
+        .table("product_offers")
+        .select(OFFER_COLUMNS)
+        .in_("product_id", unique_product_ids)
+        .execute()
+    )
+    return response.data or []
+
+
 def fetch_history_for_product(product_id):
     response = (
         get_supabase_client()
