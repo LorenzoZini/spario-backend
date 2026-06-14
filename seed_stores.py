@@ -1,9 +1,7 @@
-from supabase import create_client
+from core.supabase_client import get_supabase_client
 
-url = "https://bbnjiqfrqafcqbsemhff.supabase.co"
-key = "sb_publishable_ZqAmZKzXfQvdWvmTTWnAhg_O4Qcu4qo"
 
-supabase = create_client(url, key)
+supabase = get_supabase_client()
 
 stores = [
     {"name": "Amazon", "website": "https://www.amazon.it", "type": "tech"},
