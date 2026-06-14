@@ -13,6 +13,7 @@ from predictions.price_predictor import predict_offer
 from repositories.catalog_repository import (
     fetch_history_for_product,
     fetch_offers_for_product,
+    fetch_offers_for_product_ids,
     fetch_products,
     fetch_stores,
 )
@@ -1170,8 +1171,10 @@ def store_lookup():
     return {store.get("id"): store for store in fetch_stores()}
 
 
-def get_best_offer(product_id, stores_by_id=None):
-    offers = fetch_offers_for_product(product_id)
+def get_best_offer(product_id, stores_by_id=None, offers=None):
+    if offers is None:
+        offers = fetch_offers_for_product(product_id)
+
     stores_by_id = stores_by_id or store_lookup()
     usable_offers = []
 
@@ -1282,11 +1285,30 @@ def product_cards_from_records(records, limit=DEFAULT_CARD_LIMIT, reasons_by_pro
 def collect_offer_records(products, budget=None):
     records = []
     stores_by_id = store_lookup()
+    product_ids = [
+        product.get("id")
+        for product in products
+        if product.get("id")
+    ]
+    offers_by_product_id = {
+        product_id: []
+        for product_id in product_ids
+    }
+
+    for offer in fetch_offers_for_product_ids(product_ids):
+        product_id = offer.get("product_id")
+        if product_id in offers_by_product_id:
+            offers_by_product_id[product_id].append(offer)
 
     for product in products:
+        product_id = product.get("id")
         record = offer_record(
             product,
-            get_best_offer(product.get("id"), stores_by_id=stores_by_id),
+            get_best_offer(
+                product_id,
+                stores_by_id=stores_by_id,
+                offers=offers_by_product_id.get(product_id, []),
+            ),
         )
         if not record:
             continue
