@@ -11,11 +11,13 @@ from ai.llm_interpreter import (
 )
 from predictions.price_predictor import predict_offer
 from repositories.catalog_repository import (
+    build_store_lookup,
     fetch_history_for_product,
     fetch_offers_for_product,
     fetch_offers_for_product_ids,
     fetch_products,
     fetch_stores,
+    fetch_stores_by_ids,
 )
 
 VALID_CONFIDENCE_VALUES = {"alta", "media"}
@@ -1167,15 +1169,26 @@ def is_offer_usable(offer):
     return True
 
 
-def store_lookup():
-    return {store.get("id"): store for store in fetch_stores()}
+def store_lookup(store_ids=None):
+    stores = (
+        fetch_stores()
+        if store_ids is None
+        else fetch_stores_by_ids(store_ids)
+    )
+    return build_store_lookup(stores)
 
 
 def get_best_offer(product_id, stores_by_id=None, offers=None):
     if offers is None:
         offers = fetch_offers_for_product(product_id)
+    else:
+        offers = list(offers)
 
-    stores_by_id = stores_by_id or store_lookup()
+    if stores_by_id is None:
+        stores_by_id = store_lookup(
+            offer.get("store_id")
+            for offer in offers
+        )
     usable_offers = []
 
     for offer in offers:
@@ -1284,7 +1297,6 @@ def product_cards_from_records(records, limit=DEFAULT_CARD_LIMIT, reasons_by_pro
 
 def collect_offer_records(products, budget=None):
     records = []
-    stores_by_id = store_lookup()
     product_ids = [
         product.get("id")
         for product in products
@@ -1295,7 +1307,13 @@ def collect_offer_records(products, budget=None):
         for product_id in product_ids
     }
 
-    for offer in fetch_offers_for_product_ids(product_ids):
+    offers = fetch_offers_for_product_ids(product_ids)
+    stores_by_id = store_lookup(
+        offer.get("store_id")
+        for offer in offers
+    )
+
+    for offer in offers:
         product_id = offer.get("product_id")
         if product_id in offers_by_product_id:
             offers_by_product_id[product_id].append(offer)
@@ -2001,7 +2019,12 @@ def answer_product_search(parsed, products):
     return "\n".join(lines)
 
 
-def answer_question_from_parsed(question, parsed):
+def answer_question_from_parsed(
+    question,
+    parsed,
+    products=None,
+    records=None,
+):
     if parsed.intent == "unknown":
         return (
             "Non ho capito bene la domanda.\n"
@@ -2010,7 +2033,9 @@ def answer_question_from_parsed(question, parsed):
             "o \"quale prodotto ha lo sconto migliore\"."
         )
 
-    products, records = products_and_records_for_parsed(parsed)
+    if products is None or records is None:
+        products, records = products_and_records_for_parsed(parsed)
+
     return short_answer_for_results(parsed, products, records, question)
 
 
@@ -2143,9 +2168,14 @@ def safe_llm_answer(llm_response, parsed, cards):
 
 def answer_question_payload(question):
     parsed = parse_question(question)
-    _, records = products_and_records_for_parsed(parsed)
+    products, records = products_and_records_for_parsed(parsed)
     candidate_cards = product_cards_from_records(records, limit=12)
-    fallback_answer = answer_question_from_parsed(question, parsed)
+    fallback_answer = answer_question_from_parsed(
+        question,
+        parsed,
+        products=products,
+        records=records,
+    )
 
     if not candidate_cards:
         return {

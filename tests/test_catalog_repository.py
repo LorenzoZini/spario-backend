@@ -6,6 +6,116 @@ from repositories import catalog_repository
 
 
 class CatalogRepositoryTests(unittest.TestCase):
+    def test_build_store_lookup_indexes_existing_store_rows(self):
+        stores = [
+            {
+                "id": "store-1",
+                "name": "Store One",
+                "website": "https://one.test",
+            },
+            {
+                "id": "store-2",
+                "name": "Store Two",
+                "website": "https://two.test",
+            },
+        ]
+
+        lookup = catalog_repository.build_store_lookup(stores)
+
+        self.assertEqual(
+            lookup,
+            {
+                "store-1": stores[0],
+                "store-2": stores[1],
+            },
+        )
+
+    @patch("repositories.catalog_repository.get_supabase_client")
+    def test_fetch_stores_by_ids_filters_and_deduplicates_ids(
+        self,
+        mock_get_client,
+    ):
+        client = MagicMock()
+        query = client.table.return_value.select.return_value
+        query.in_.return_value.execute.return_value = SimpleNamespace(
+            data=[
+                {"id": "store-1", "name": "Store One"},
+                {"id": "store-2", "name": "Store Two"},
+            ]
+        )
+        mock_get_client.return_value = client
+
+        stores = catalog_repository.fetch_stores_by_ids(
+            ["store-1", "store-2", "store-1", None, "", 123]
+        )
+
+        self.assertEqual(
+            stores,
+            [
+                {"id": "store-1", "name": "Store One"},
+                {"id": "store-2", "name": "Store Two"},
+            ],
+        )
+        client.table.assert_called_once_with("stores")
+        client.table.return_value.select.assert_called_once_with(
+            catalog_repository.STORE_COLUMNS
+        )
+        query.in_.assert_called_once_with(
+            "id",
+            ["store-1", "store-2"],
+        )
+
+    @patch("repositories.catalog_repository.get_supabase_client")
+    def test_fetch_stores_by_ids_skips_empty_input(self, mock_get_client):
+        stores = catalog_repository.fetch_stores_by_ids(
+            [None, "", "   ", 123]
+        )
+
+        self.assertEqual(stores, [])
+        mock_get_client.assert_not_called()
+
+    @patch.object(catalog_repository, "STORE_ID_CHUNK_SIZE", 2)
+    @patch("repositories.catalog_repository.get_supabase_client")
+    def test_fetch_stores_by_ids_chunks_large_id_lists(
+        self,
+        mock_get_client,
+    ):
+        client = MagicMock()
+        query = client.table.return_value.select.return_value
+        query.in_.return_value = query
+        query.execute.side_effect = [
+            SimpleNamespace(
+                data=[
+                    {"id": "store-1", "name": "Store One"},
+                    {"id": "store-2", "name": "Store Two"},
+                ]
+            ),
+            SimpleNamespace(
+                data=[{"id": "store-3", "name": "Store Three"}]
+            ),
+        ]
+        mock_get_client.return_value = client
+
+        stores = catalog_repository.fetch_stores_by_ids(
+            ["store-1", "store-2", "store-1", "store-3"]
+        )
+
+        self.assertEqual(
+            query.in_.call_args_list,
+            [
+                call("id", ["store-1", "store-2"]),
+                call("id", ["store-3"]),
+            ],
+        )
+        self.assertEqual(
+            stores,
+            [
+                {"id": "store-1", "name": "Store One"},
+                {"id": "store-2", "name": "Store Two"},
+                {"id": "store-3", "name": "Store Three"},
+            ],
+        )
+
     @patch("repositories.catalog_repository.get_supabase_client")
     def test_fetch_products_preserves_columns_and_pagination(self, mock_get_client):
         client = MagicMock()
