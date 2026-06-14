@@ -9,19 +9,12 @@ from ai.llm_interpreter import (
     generate_shopping_response_with_llm,
     interpret_question_with_llm,
 )
-from core.supabase_client import get_supabase_client
 from predictions.price_predictor import predict_offer
-
-
-PRODUCT_COLUMNS = "id,name,category,image_url,search_keywords"
-OFFER_COLUMNS = (
-    "id,product_id,store_id,current_price,old_price,product_url,"
-    "availability,condition,listing_type,data_confidence"
-)
-STORE_COLUMNS = "id,name,website"
-HISTORY_COLUMNS = (
-    "id,product_id,store_id,price,checked_at,condition,"
-    "listing_type,data_confidence"
+from repositories.catalog_repository import (
+    fetch_history_for_product,
+    fetch_offers_for_product,
+    fetch_products,
+    fetch_stores,
 )
 
 VALID_CONFIDENCE_VALUES = {"alta", "media"}
@@ -37,9 +30,6 @@ ALLOWED_INTENTS = [
     "product_search",
     "unknown",
 ]
-
-supabase = get_supabase_client()
-
 
 CATEGORY_ALIASES = {
     "tv": [
@@ -390,57 +380,6 @@ def parse_datetime(value):
         return parsed.replace(tzinfo=timezone.utc)
 
     return parsed
-
-
-def fetch_all(table_name, columns):
-    rows = []
-    page_size = 1000
-    start = 0
-
-    while True:
-        response = (
-            supabase.table(table_name)
-            .select(columns)
-            .range(start, start + page_size - 1)
-            .execute()
-        )
-        batch = response.data or []
-        rows.extend(batch)
-
-        if len(batch) < page_size:
-            break
-
-        start += page_size
-
-    return rows
-
-
-def fetch_products():
-    return fetch_all("products", PRODUCT_COLUMNS)
-
-
-def fetch_stores():
-    return fetch_all("stores", STORE_COLUMNS)
-
-
-def fetch_offers_for_product(product_id):
-    response = (
-        supabase.table("product_offers")
-        .select(OFFER_COLUMNS)
-        .eq("product_id", product_id)
-        .execute()
-    )
-    return response.data or []
-
-
-def fetch_history_for_product(product_id):
-    response = (
-        supabase.table("price_history")
-        .select(HISTORY_COLUMNS)
-        .eq("product_id", product_id)
-        .execute()
-    )
-    return response.data or []
 
 
 def detect_category(normalized_question):
