@@ -15,6 +15,7 @@ HISTORY_COLUMNS = (
 DEFAULT_PAGE_SIZE = 1000
 # Conservative bound to keep PostgREST `in` filters well below URL/query limits.
 OFFER_PRODUCT_ID_CHUNK_SIZE = 100
+STORE_ID_CHUNK_SIZE = 100
 OFFER_PAGE_SIZE = DEFAULT_PAGE_SIZE
 
 
@@ -52,6 +53,38 @@ def fetch_products():
 
 def fetch_stores():
     return fetch_all("stores", STORE_COLUMNS)
+
+
+def fetch_stores_by_ids(store_ids):
+    unique_store_ids = list(dict.fromkeys(
+        store_id
+        for store_id in store_ids
+        if isinstance(store_id, str) and store_id.strip()
+    ))
+
+    if not unique_store_ids:
+        return []
+
+    client = get_supabase_client()
+    stores = []
+
+    for store_id_chunk in _chunked(unique_store_ids, STORE_ID_CHUNK_SIZE):
+        response = (
+            client.table("stores")
+            .select(STORE_COLUMNS)
+            .in_("id", store_id_chunk)
+            .execute()
+        )
+        stores.extend(response.data or [])
+
+    return stores
+
+
+def build_store_lookup(stores):
+    return {
+        store.get("id"): store
+        for store in stores
+    }
 
 
 def fetch_offers_for_product(product_id):
