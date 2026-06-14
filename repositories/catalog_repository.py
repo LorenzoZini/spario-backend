@@ -13,6 +13,14 @@ HISTORY_COLUMNS = (
 )
 
 DEFAULT_PAGE_SIZE = 1000
+# Conservative bound to keep PostgREST `in` filters well below URL/query limits.
+OFFER_PRODUCT_ID_CHUNK_SIZE = 100
+OFFER_PAGE_SIZE = DEFAULT_PAGE_SIZE
+
+
+def _chunked(values, chunk_size):
+    for start in range(0, len(values), chunk_size):
+        yield values[start:start + chunk_size]
 
 
 def fetch_all(table_name, columns, page_size=DEFAULT_PAGE_SIZE):
@@ -61,20 +69,41 @@ def fetch_offers_for_product_ids(product_ids):
     unique_product_ids = list(dict.fromkeys(
         product_id
         for product_id in product_ids
-        if product_id
+        if isinstance(product_id, str) and product_id.strip()
     ))
 
     if not unique_product_ids:
         return []
 
-    response = (
-        get_supabase_client()
-        .table("product_offers")
-        .select(OFFER_COLUMNS)
-        .in_("product_id", unique_product_ids)
-        .execute()
-    )
-    return response.data or []
+    client = get_supabase_client()
+    offers = []
+
+    for product_id_chunk in _chunked(
+        unique_product_ids,
+        OFFER_PRODUCT_ID_CHUNK_SIZE,
+    ):
+        start = 0
+
+        while True:
+            response = (
+                client.table("product_offers")
+                .select(OFFER_COLUMNS)
+                .in_("product_id", product_id_chunk)
+                .order("product_id")
+                .order("current_price", nullsfirst=False)
+                .order("id")
+                .range(start, start + OFFER_PAGE_SIZE - 1)
+                .execute()
+            )
+            batch = response.data or []
+            offers.extend(batch)
+
+            if len(batch) < OFFER_PAGE_SIZE:
+                break
+
+            start += OFFER_PAGE_SIZE
+
+    return offers
 
 
 def fetch_history_for_product(product_id):
