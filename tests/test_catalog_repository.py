@@ -60,7 +60,10 @@ class CatalogRepositoryTests(unittest.TestCase):
     ):
         client = MagicMock()
         query = client.table.return_value.select.return_value
-        query.in_.return_value.execute.return_value = SimpleNamespace(
+        query.in_.return_value = query
+        query.order.return_value = query
+        query.range.return_value = query
+        query.execute.return_value = SimpleNamespace(
             data=[
                 {"id": "offer-1", "product_id": "product-1"},
                 {"id": "offer-2", "product_id": "product-2"},
@@ -87,16 +90,133 @@ class CatalogRepositoryTests(unittest.TestCase):
             "product_id",
             ["product-1", "product-2"],
         )
+        self.assertEqual(
+            query.order.call_args_list,
+            [
+                call("product_id"),
+                call("current_price", nullsfirst=False),
+                call("id"),
+            ],
+        )
+        query.range.assert_called_once_with(
+            0,
+            catalog_repository.OFFER_PAGE_SIZE - 1,
+        )
 
     @patch("repositories.catalog_repository.get_supabase_client")
     def test_fetch_offers_for_product_ids_skips_empty_input(
         self,
         mock_get_client,
     ):
-        offers = catalog_repository.fetch_offers_for_product_ids([])
+        offers = catalog_repository.fetch_offers_for_product_ids(
+            [None, "", "   ", 123]
+        )
 
         self.assertEqual(offers, [])
         mock_get_client.assert_not_called()
+
+    @patch.object(catalog_repository, "OFFER_PRODUCT_ID_CHUNK_SIZE", 2)
+    @patch("repositories.catalog_repository.get_supabase_client")
+    def test_fetch_offers_for_product_ids_splits_ids_into_stable_chunks(
+        self,
+        mock_get_client,
+    ):
+        client = MagicMock()
+        query = client.table.return_value.select.return_value
+        query.in_.return_value = query
+        query.order.return_value = query
+        query.range.return_value = query
+        query.execute.side_effect = [
+            SimpleNamespace(
+                data=[{"id": "offer-1", "product_id": "product-1"}]
+            ),
+            SimpleNamespace(
+                data=[{"id": "offer-3", "product_id": "product-3"}]
+            ),
+        ]
+        mock_get_client.return_value = client
+
+        offers = catalog_repository.fetch_offers_for_product_ids(
+            ["product-1", "product-2", "product-1", "product-3"]
+        )
+
+        self.assertEqual(
+            query.in_.call_args_list,
+            [
+                call("product_id", ["product-1", "product-2"]),
+                call("product_id", ["product-3"]),
+            ],
+        )
+        self.assertEqual(
+            query.order.call_args_list,
+            [
+                call("product_id"),
+                call("current_price", nullsfirst=False),
+                call("id"),
+                call("product_id"),
+                call("current_price", nullsfirst=False),
+                call("id"),
+            ],
+        )
+        self.assertEqual(
+            offers,
+            [
+                {"id": "offer-1", "product_id": "product-1"},
+                {"id": "offer-3", "product_id": "product-3"},
+            ],
+        )
+
+    @patch.object(catalog_repository, "OFFER_PAGE_SIZE", 2)
+    @patch("repositories.catalog_repository.get_supabase_client")
+    def test_fetch_offers_for_product_ids_combines_paginated_pages(
+        self,
+        mock_get_client,
+    ):
+        client = MagicMock()
+        query = client.table.return_value.select.return_value
+        query.in_.return_value = query
+        query.order.return_value = query
+        query.range.return_value = query
+        query.execute.side_effect = [
+            SimpleNamespace(
+                data=[
+                    {"id": "offer-1", "product_id": "product-1"},
+                    {"id": "offer-2", "product_id": "product-1"},
+                ]
+            ),
+            SimpleNamespace(
+                data=[{"id": "offer-3", "product_id": "product-1"}]
+            ),
+        ]
+        mock_get_client.return_value = client
+
+        offers = catalog_repository.fetch_offers_for_product_ids(
+            ["product-1"]
+        )
+
+        self.assertEqual(
+            query.range.call_args_list,
+            [call(0, 1), call(2, 3)],
+        )
+        self.assertEqual(
+            query.order.call_args_list,
+            [
+                call("product_id"),
+                call("current_price", nullsfirst=False),
+                call("id"),
+                call("product_id"),
+                call("current_price", nullsfirst=False),
+                call("id"),
+            ],
+        )
+        self.assertEqual(
+            offers,
+            [
+                {"id": "offer-1", "product_id": "product-1"},
+                {"id": "offer-2", "product_id": "product-1"},
+                {"id": "offer-3", "product_id": "product-1"},
+            ],
+        )
 
     @patch("repositories.catalog_repository.get_supabase_client")
     def test_fetch_history_filters_by_product_id(self, mock_get_client):
