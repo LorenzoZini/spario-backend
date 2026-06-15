@@ -19,6 +19,10 @@ OPENAI_API_KEY = _get_env("OPENAI_API_KEY")
 SPARIO_ENABLE_LLM_INTENT = _get_env("SPARIO_ENABLE_LLM_INTENT", "")
 SPARIO_LLM_MODEL = _get_env("SPARIO_LLM_MODEL", "gpt-4o-mini")
 SPARIO_LLM_TIMEOUT_SECONDS = _get_env("SPARIO_LLM_TIMEOUT_SECONDS", "5")
+SPARIO_RETRIEVAL_DIAGNOSTICS = _get_env(
+    "SPARIO_RETRIEVAL_DIAGNOSTICS",
+    "",
+)
 
 # API runtime
 CORS_ORIGINS = _get_env("CORS_ORIGINS", "*")
@@ -50,6 +54,19 @@ def get_llm_timeout_seconds():
         "SPARIO_LLM_TIMEOUT_SECONDS",
         SPARIO_LLM_TIMEOUT_SECONDS,
     )
+
+
+def get_retrieval_diagnostics_enabled():
+    value = _get_env(
+        "SPARIO_RETRIEVAL_DIAGNOSTICS",
+        SPARIO_RETRIEVAL_DIAGNOSTICS,
+    )
+    return str(value or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def require_supabase_settings():

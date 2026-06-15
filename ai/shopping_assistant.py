@@ -9,6 +9,16 @@ from ai.llm_interpreter import (
     generate_shopping_response_with_llm,
     interpret_question_with_llm,
 )
+from core.retrieval_diagnostics import (
+    finish_retrieval_diagnostics,
+    record_bounded_candidates,
+    record_final_products,
+    record_legacy_fallback,
+    record_offer_lookup,
+    record_parsed_question,
+    record_ranking_input,
+    start_retrieval_diagnostics,
+)
 from predictions.price_predictor import predict_offer
 from repositories.catalog_repository import (
     build_store_lookup,
@@ -1140,20 +1150,33 @@ def bounded_candidates_are_sufficient(products, parsed, limit):
 def retrieve_products(parsed, limit=80):
     products, bounded_query_used = fetch_bounded_product_candidates(parsed)
     used_legacy_fallback = False
+    record_bounded_candidates(len(products), bounded_query_used)
 
     if not bounded_query_used or not bounded_candidates_are_sufficient(
         products,
         parsed,
         limit,
     ):
+        if not bounded_query_used:
+            fallback_reason = "no_safe_bounded_filters"
+        elif not products:
+            fallback_reason = "no_bounded_candidates"
+        else:
+            fallback_reason = "insufficient_bounded_candidates"
+
+        record_legacy_fallback(fallback_reason)
         products = fetch_products()
         used_legacy_fallback = True
 
+    record_ranking_input(len(products))
     ranked = rank_product_candidates(products, parsed, limit)
     if ranked or not bounded_query_used or used_legacy_fallback:
         return ranked
 
-    return rank_product_candidates(fetch_products(), parsed, limit)
+    record_legacy_fallback("no_ranked_bounded_candidates")
+    products = fetch_products()
+    record_ranking_input(len(products))
+    return rank_product_candidates(products, parsed, limit)
 
 
 def expanded_terms(keywords, category=None):
@@ -1300,6 +1323,7 @@ def store_lookup(store_ids=None):
 def get_best_offer(product_id, stores_by_id=None, offers=None):
     if offers is None:
         offers = fetch_offers_for_product(product_id)
+        record_offer_lookup(1 if product_id else 0, len(offers))
     else:
         offers = list(offers)
 
@@ -1427,6 +1451,7 @@ def collect_offer_records(products, budget=None):
     }
 
     offers = fetch_offers_for_product_ids(product_ids)
+    record_offer_lookup(len(dict.fromkeys(product_ids)), len(offers))
     stores_by_id = store_lookup(
         offer.get("store_id")
         for offer in offers
@@ -2286,47 +2311,70 @@ def safe_llm_answer(llm_response, parsed, cards):
 
 
 def answer_question_payload(question):
-    parsed = parse_question(question)
-    products, records = products_and_records_for_parsed(parsed)
-    candidate_cards = product_cards_from_records(records, limit=12)
-    fallback_answer = answer_question_from_parsed(
-        question,
-        parsed,
-        products=products,
-        records=records,
-    )
+    diagnostics_token = start_retrieval_diagnostics()
+    request_succeeded = False
 
-    if not candidate_cards:
-        return {
-            "answer": fallback_answer,
-            "products": [],
-        }
+    try:
+        parsed = parse_question(question)
+        record_parsed_question(parsed)
+        products, records = products_and_records_for_parsed(parsed)
+        candidate_cards = product_cards_from_records(records, limit=12)
+        fallback_answer = answer_question_from_parsed(
+            question,
+            parsed,
+            products=products,
+            records=records,
+        )
 
-    if looks_product_specific_parsed(parsed):
-        return {
-            "answer": answer_product_specific_match(parsed, records),
-            "products": candidate_cards[:DEFAULT_CARD_LIMIT],
-        }
+        if not candidate_cards:
+            payload = {
+                "answer": fallback_answer,
+                "products": [],
+            }
+        elif looks_product_specific_parsed(parsed):
+            payload = {
+                "answer": answer_product_specific_match(parsed, records),
+                "products": candidate_cards[:DEFAULT_CARD_LIMIT],
+            }
+        else:
+            llm_response = generate_shopping_response_with_llm(
+                question=question,
+                parsed_payload=parsed_question_payload(parsed),
+                product_cards=candidate_cards,
+            )
 
-    llm_response = generate_shopping_response_with_llm(
-        question=question,
-        parsed_payload=parsed_question_payload(parsed),
-        product_cards=candidate_cards,
-    )
+            if llm_response:
+                final_products = ranked_cards_from_llm(
+                    candidate_cards,
+                    llm_response,
+                )
+                answer = safe_llm_answer(
+                    llm_response,
+                    parsed,
+                    final_products,
+                )
+                if not answer:
+                    answer = (
+                        concise_answer_from_cards(parsed, final_products)
+                        or fallback_answer
+                    )
+            else:
+                final_products = candidate_cards[:DEFAULT_CARD_LIMIT]
+                answer = fallback_answer
 
-    if llm_response:
-        products = ranked_cards_from_llm(candidate_cards, llm_response)
-        answer = safe_llm_answer(llm_response, parsed, products)
-        if not answer:
-            answer = concise_answer_from_cards(parsed, products) or fallback_answer
-    else:
-        products = candidate_cards[:DEFAULT_CARD_LIMIT]
-        answer = fallback_answer
+            payload = {
+                "answer": answer,
+                "products": final_products,
+            }
 
-    return {
-        "answer": answer,
-        "products": products,
-    }
+        record_final_products(len(payload["products"]))
+        request_succeeded = True
+        return payload
+    finally:
+        finish_retrieval_diagnostics(
+            diagnostics_token,
+            succeeded=request_succeeded,
+        )
 
 
 def build_parser():

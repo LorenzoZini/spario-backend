@@ -10,6 +10,16 @@ from core.supabase_client import (
 
 
 class CoreConfigTests(unittest.TestCase):
+    def test_retrieval_diagnostics_are_disabled_by_default(self):
+        with (
+            patch.dict(
+                os.environ,
+                {"SPARIO_RETRIEVAL_DIAGNOSTICS": ""},
+            ),
+            patch.object(config, "SPARIO_RETRIEVAL_DIAGNOSTICS", ""),
+        ):
+            self.assertFalse(config.get_retrieval_diagnostics_enabled())
+
     def test_missing_supabase_settings_raise_clear_error(self):
         with (
             patch.dict(
