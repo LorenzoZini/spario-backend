@@ -12,6 +12,7 @@ from ai.llm_interpreter import (
 from predictions.price_predictor import predict_offer
 from repositories.catalog_repository import (
     build_store_lookup,
+    fetch_candidate_products,
     fetch_history_for_product,
     fetch_offers_for_product,
     fetch_offers_for_product_ids,
@@ -24,6 +25,9 @@ VALID_CONFIDENCE_VALUES = {"alta", "media"}
 DEFAULT_PRODUCT_LIMIT = 5
 DEFAULT_HISTORY_MIN_POINTS = 3
 DEFAULT_CARD_LIMIT = 6
+BOUNDED_PRODUCT_CANDIDATE_LIMIT = 300
+MIN_BOUNDED_CATEGORY_CANDIDATES = 20
+MIN_BOUNDED_BRAND_CANDIDATES = 5
 ALLOWED_INTENTS = [
     "cheapest_offer",
     "best_under_budget",
@@ -1002,8 +1006,7 @@ def hybrid_product_score(product, parsed):
     return score
 
 
-def retrieve_products(parsed, limit=80):
-    products = fetch_products()
+def rank_product_candidates(products, parsed, limit):
     scored = []
 
     for product in products:
@@ -1035,6 +1038,122 @@ def retrieve_products(parsed, limit=80):
 
     scored.sort(key=lambda item: (-item[0], product_search_blob(item[1])))
     return [product for _, product in scored[:limit]]
+
+
+def bounded_candidate_search_terms(parsed):
+    terms = []
+
+    def add_term(value):
+        normalized = normalize_text(value)
+        if normalized and normalized not in terms:
+            terms.append(normalized)
+
+    product_phrase = " ".join(product_specific_required_tokens(parsed))
+    if product_phrase:
+        add_term(product_phrase)
+
+    for source in (
+        parsed.product_keywords,
+        parsed.model_terms,
+        parsed.keywords,
+    ):
+        for value in source:
+            add_term(value)
+
+    if parsed.brand:
+        for alias in BRAND_ALIASES.get(parsed.brand, [parsed.brand]):
+            add_term(alias)
+
+    for need in parsed.needs:
+        for alias in NEED_ALIASES.get(need, []):
+            add_term(alias)
+
+    if parsed.category:
+        for alias in CATEGORY_ALIASES.get(parsed.category, []):
+            if normalize_text(alias) not in CATEGORY_ALIAS_BLOCKLIST:
+                add_term(alias)
+
+    return terms
+
+
+def merge_product_candidates(*candidate_groups):
+    products = []
+    seen_ids = set()
+
+    for group in candidate_groups:
+        for product in group:
+            product_id = product.get("id")
+            if not product_id or product_id in seen_ids:
+                continue
+
+            products.append(product)
+            seen_ids.add(product_id)
+
+    return products
+
+
+def fetch_bounded_product_candidates(parsed):
+    category_values = category_values_for_search(parsed.category)
+    search_terms = bounded_candidate_search_terms(parsed)
+
+    if not category_values and not search_terms:
+        return [], False
+
+    category_candidates = []
+    if category_values:
+        category_candidates = fetch_candidate_products(
+            category_values=category_values,
+            limit=BOUNDED_PRODUCT_CANDIDATE_LIMIT,
+        )
+
+    term_candidates = []
+    if search_terms:
+        term_candidates = fetch_candidate_products(
+            search_terms=search_terms,
+            limit=BOUNDED_PRODUCT_CANDIDATE_LIMIT,
+        )
+
+    return merge_product_candidates(
+        category_candidates,
+        term_candidates,
+    ), True
+
+
+def bounded_candidates_are_sufficient(products, parsed, limit):
+    if not products:
+        return False
+
+    if looks_product_specific_parsed(parsed):
+        return True
+
+    if parsed.category:
+        minimum = min(limit, MIN_BOUNDED_CATEGORY_CANDIDATES)
+        return len(products) >= minimum
+
+    if parsed.brand:
+        minimum = min(limit, MIN_BOUNDED_BRAND_CANDIDATES)
+        return len(products) >= minimum
+
+    return len(products) >= min(limit, DEFAULT_PRODUCT_LIMIT)
+
+
+def retrieve_products(parsed, limit=80):
+    products, bounded_query_used = fetch_bounded_product_candidates(parsed)
+    used_legacy_fallback = False
+
+    if not bounded_query_used or not bounded_candidates_are_sufficient(
+        products,
+        parsed,
+        limit,
+    ):
+        products = fetch_products()
+        used_legacy_fallback = True
+
+    ranked = rank_product_candidates(products, parsed, limit)
+    if ranked or not bounded_query_used or used_legacy_fallback:
+        return ranked
+
+    return rank_product_candidates(fetch_products(), parsed, limit)
 
 
 def expanded_terms(keywords, category=None):

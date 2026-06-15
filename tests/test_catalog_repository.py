@@ -6,6 +6,91 @@ from repositories import catalog_repository
 
 
 class CatalogRepositoryTests(unittest.TestCase):
+    @patch("repositories.catalog_repository.get_supabase_client")
+    def test_fetch_candidate_products_applies_category_filter_and_limit(
+        self,
+        mock_get_client,
+    ):
+        client = MagicMock()
+        query = client.table.return_value.select.return_value
+        query.in_.return_value = query
+        query.order.return_value = query
+        query.limit.return_value = query
+        query.execute.return_value = SimpleNamespace(
+            data=[{"id": "product-1", "category": "tv"}]
+        )
+        mock_get_client.return_value = client
+
+        products = catalog_repository.fetch_candidate_products(
+            category_values=["tv", "tv", "", None],
+            limit=25,
+        )
+
+        self.assertEqual(products, [{"id": "product-1", "category": "tv"}])
+        client.table.assert_called_once_with("products")
+        client.table.return_value.select.assert_called_once_with(
+            catalog_repository.PRODUCT_COLUMNS
+        )
+        query.in_.assert_called_once_with("category", ["tv"])
+        query.or_.assert_not_called()
+        self.assertEqual(
+            query.order.call_args_list,
+            [call("name"), call("id")],
+        )
+        query.limit.assert_called_once_with(25)
+
+    @patch("repositories.catalog_repository.get_supabase_client")
+    def test_fetch_candidate_products_applies_safe_search_terms(
+        self,
+        mock_get_client,
+    ):
+        client = MagicMock()
+        query = client.table.return_value.select.return_value
+        query.or_.return_value = query
+        query.order.return_value = query
+        query.limit.return_value = query
+        query.execute.return_value = SimpleNamespace(
+            data=[{"id": "product-1", "name": "Apple iPhone 16"}]
+        )
+        mock_get_client.return_value = client
+
+        products = catalog_repository.fetch_candidate_products(
+            search_terms=[
+                "iphone",
+                "iphone",
+                "galaxy),id.not.is.null",
+            ],
+            limit=50,
+        )
+
+        self.assertEqual(
+            products,
+            [{"id": "product-1", "name": "Apple iPhone 16"}],
+        )
+        query.in_.assert_not_called()
+        query.or_.assert_called_once_with(
+            "name.ilike.%iphone%,"
+            "search_keywords.ilike.%iphone%,"
+            "category.ilike.%iphone%,"
+            "name.ilike.%galaxy id not is null%,"
+            "search_keywords.ilike.%galaxy id not is null%,"
+            "category.ilike.%galaxy id not is null%"
+        )
+        query.limit.assert_called_once_with(50)
+
+    @patch("repositories.catalog_repository.get_supabase_client")
+    def test_fetch_candidate_products_skips_empty_filters(
+        self,
+        mock_get_client,
+    ):
+        products = catalog_repository.fetch_candidate_products(
+            category_values=[None, "", 123],
+            search_terms=[None, "", "(),"],
+        )
+
+        self.assertEqual(products, [])
+        mock_get_client.assert_not_called()
+
     def test_build_store_lookup_indexes_existing_store_rows(self):
         stores = [
             {

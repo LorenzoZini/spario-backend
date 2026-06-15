@@ -1,3 +1,5 @@
+import re
+
 from core.supabase_client import get_supabase_client
 
 
@@ -17,11 +19,22 @@ DEFAULT_PAGE_SIZE = 1000
 OFFER_PRODUCT_ID_CHUNK_SIZE = 100
 STORE_ID_CHUNK_SIZE = 100
 OFFER_PAGE_SIZE = DEFAULT_PAGE_SIZE
+PRODUCT_CANDIDATE_LIMIT = 300
+PRODUCT_SEARCH_TERM_LIMIT = 12
 
 
 def _chunked(values, chunk_size):
     for start in range(0, len(values), chunk_size):
         yield values[start:start + chunk_size]
+
+
+def _clean_search_term(value):
+    if not isinstance(value, str):
+        return ""
+
+    cleaned = re.sub(r"[^\w\s-]", " ", value, flags=re.UNICODE)
+    cleaned = cleaned.replace("_", " ")
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def fetch_all(table_name, columns, page_size=DEFAULT_PAGE_SIZE):
@@ -49,6 +62,60 @@ def fetch_all(table_name, columns, page_size=DEFAULT_PAGE_SIZE):
 
 def fetch_products():
     return fetch_all("products", PRODUCT_COLUMNS)
+
+
+def fetch_candidate_products(
+    category_values=None,
+    search_terms=None,
+    limit=PRODUCT_CANDIDATE_LIMIT,
+):
+    categories = list(dict.fromkeys(
+        category.strip()
+        for category in (category_values or [])
+        if isinstance(category, str) and category.strip()
+    ))
+    terms = list(dict.fromkeys(
+        cleaned
+        for term in (search_terms or [])
+        if (cleaned := _clean_search_term(term))
+    ))[:PRODUCT_SEARCH_TERM_LIMIT]
+
+    if not categories and not terms:
+        return []
+
+    try:
+        bounded_limit = min(PRODUCT_CANDIDATE_LIMIT, max(1, int(limit)))
+    except (TypeError, ValueError):
+        bounded_limit = PRODUCT_CANDIDATE_LIMIT
+
+    query = (
+        get_supabase_client()
+        .table("products")
+        .select(PRODUCT_COLUMNS)
+    )
+
+    if categories:
+        query = query.in_("category", categories)
+
+    if terms:
+        filters = []
+        for term in terms:
+            pattern = f"%{term}%"
+            filters.extend([
+                f"name.ilike.{pattern}",
+                f"search_keywords.ilike.{pattern}",
+                f"category.ilike.{pattern}",
+            ])
+        query = query.or_(",".join(filters))
+
+    response = (
+        query
+        .order("name")
+        .order("id")
+        .limit(bounded_limit)
+        .execute()
+    )
+    return response.data or []
 
 
 def fetch_stores():
