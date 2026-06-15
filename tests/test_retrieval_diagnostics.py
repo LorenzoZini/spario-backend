@@ -129,6 +129,9 @@ class RetrievalDiagnosticsTests(unittest.TestCase):
         self.assertIsNone(diagnostic["budget"])
         self.assertTrue(diagnostic["bounded_retrieval_used"])
         self.assertEqual(diagnostic["bounded_candidates"], 20)
+        self.assertFalse(diagnostic["offer_first_retrieval_used"])
+        self.assertEqual(diagnostic["offer_first_product_ids"], 0)
+        self.assertIsNone(diagnostic["offer_first_reason"])
         self.assertFalse(diagnostic["legacy_fallback_used"])
         self.assertIsNone(diagnostic["fallback_reason"])
         self.assertEqual(diagnostic["products_passed_to_ranking"], 20)
@@ -224,6 +227,91 @@ class RetrievalDiagnosticsTests(unittest.TestCase):
         self.assertEqual(
             set(payload),
             {"answer", "products"},
+        )
+
+    def test_offer_first_fields_are_reported_in_summary(self):
+        parsed = shopping_assistant.ParsedQuestion(
+            intent="best_under_budget",
+            query="",
+            normalized_question="prodotto tech sotto 100",
+            budget=100,
+            sort_preference="lowest_price",
+        )
+        candidate = product(
+            "product-1",
+            "Budget Product",
+            "tech",
+        )
+
+        with (
+            patch(
+                "core.retrieval_diagnostics.get_retrieval_diagnostics_enabled",
+                return_value=True,
+            ),
+            patch(
+                "ai.shopping_assistant.parse_question",
+                return_value=parsed,
+            ),
+            patch(
+                "ai.shopping_assistant.fetch_candidate_products",
+            ) as mock_product_candidates,
+            patch(
+                "ai.shopping_assistant.fetch_offer_first_product_ids",
+                return_value=["product-1"],
+            ),
+            patch(
+                "ai.shopping_assistant.fetch_products_by_ids",
+                return_value=[candidate],
+            ),
+            patch(
+                "ai.shopping_assistant.fetch_products",
+            ) as mock_fetch_products,
+            patch(
+                "ai.shopping_assistant.fetch_offers_for_product_ids",
+                return_value=[offer("product-1", "store-1", 80)],
+            ),
+            patch(
+                "ai.shopping_assistant.fetch_stores_by_ids",
+                return_value=[{"id": "store-1", "name": "Store One"}],
+            ),
+            patch(
+                "ai.shopping_assistant.generate_shopping_response_with_llm",
+                return_value=None,
+            ),
+            self.assertLogs("spario.retrieval", level="INFO") as captured,
+        ):
+            payload = shopping_assistant.answer_question_payload(
+                "prodotto tech sotto 100"
+            )
+
+        diagnostic = parse_log(captured.records[0])
+        self.assertFalse(diagnostic["bounded_retrieval_used"])
+        self.assertEqual(diagnostic["bounded_candidates"], 0)
+        self.assertTrue(diagnostic["offer_first_retrieval_used"])
+        self.assertEqual(diagnostic["offer_first_product_ids"], 1)
+        self.assertEqual(diagnostic["offer_first_reason"], "budget")
+        self.assertFalse(diagnostic["legacy_fallback_used"])
+        self.assertEqual(diagnostic["products_passed_to_ranking"], 1)
+        self.assertEqual(diagnostic["final_products_returned"], 1)
+        mock_product_candidates.assert_not_called()
+        mock_fetch_products.assert_not_called()
+        self.assertEqual(set(payload), {"answer", "products"})
+        self.assertEqual(
+            set(payload["products"][0]),
+            {
+                "product_id",
+                "name",
+                "category",
+                "image_url",
+                "store_name",
+                "price",
+                "old_price",
+                "discount_pct",
+                "product_url",
+                "availability",
+                "data_confidence",
+                "reason",
+            },
         )
 
 

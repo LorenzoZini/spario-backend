@@ -7,6 +7,196 @@ from repositories import catalog_repository
 
 class CatalogRepositoryTests(unittest.TestCase):
     @patch("repositories.catalog_repository.get_supabase_client")
+    def test_fetch_products_by_ids_deduplicates_and_preserves_input_order(
+        self,
+        mock_get_client,
+    ):
+        client = MagicMock()
+        query = client.table.return_value.select.return_value
+        query.in_.return_value = query
+        query.order.return_value = query
+        query.execute.return_value = SimpleNamespace(
+            data=[
+                {"id": "product-1", "name": "Product One"},
+                {"id": "product-2", "name": "Product Two"},
+            ]
+        )
+        mock_get_client.return_value = client
+
+        products = catalog_repository.fetch_products_by_ids(
+            ["product-2", "product-1", "product-2", None, ""]
+        )
+
+        self.assertEqual(
+            products,
+            [
+                {"id": "product-2", "name": "Product Two"},
+                {"id": "product-1", "name": "Product One"},
+            ],
+        )
+        query.in_.assert_called_once_with(
+            "id",
+            ["product-2", "product-1"],
+        )
+        query.order.assert_called_once_with("id")
+
+    @patch("repositories.catalog_repository.get_supabase_client")
+    def test_fetch_products_by_ids_skips_empty_input(self, mock_get_client):
+        products = catalog_repository.fetch_products_by_ids(
+            [None, "", "   ", 123]
+        )
+
+        self.assertEqual(products, [])
+        mock_get_client.assert_not_called()
+
+    @patch("repositories.catalog_repository.get_supabase_client")
+    def test_offer_first_discount_ids_use_real_discount_signal(
+        self,
+        mock_get_client,
+    ):
+        client = MagicMock()
+        query = client.table.return_value.select.return_value
+        query.gt.return_value = query
+        query.order.return_value = query
+        query.limit.return_value = query
+        query.execute.return_value = SimpleNamespace(
+            data=[
+                {
+                    "id": "offer-2",
+                    "product_id": "product-2",
+                    "current_price": 80,
+                    "old_price": 100,
+                    "availability": "available",
+                    "condition": "new",
+                    "data_confidence": "alta",
+                },
+                {
+                    "id": "offer-1-low",
+                    "product_id": "product-1",
+                    "current_price": 100,
+                    "old_price": 200,
+                    "availability": "available",
+                    "condition": "new",
+                    "data_confidence": "alta",
+                },
+                {
+                    "id": "offer-1-high",
+                    "product_id": "product-1",
+                    "current_price": 40,
+                    "old_price": 100,
+                    "availability": "available",
+                    "condition": "new",
+                    "data_confidence": "alta",
+                },
+                {
+                    "id": "offer-no-discount",
+                    "product_id": "product-3",
+                    "current_price": 100,
+                    "old_price": 100,
+                    "availability": "available",
+                    "condition": "new",
+                    "data_confidence": "alta",
+                },
+            ]
+        )
+        mock_get_client.return_value = client
+
+        product_ids = catalog_repository.fetch_offer_first_product_ids(
+            reason="discount",
+        )
+
+        self.assertEqual(product_ids, ["product-1", "product-2"])
+        self.assertEqual(
+            query.gt.call_args_list,
+            [call("current_price", 0), call("old_price", 0)],
+        )
+        self.assertEqual(
+            query.order.call_args_list,
+            [
+                call("old_price", desc=True, nullsfirst=False),
+                call("current_price", nullsfirst=False),
+                call("id"),
+            ],
+        )
+        query.limit.assert_called_once_with(
+            catalog_repository.OFFER_FIRST_ROW_LIMIT
+        )
+
+    @patch("repositories.catalog_repository.get_supabase_client")
+    def test_offer_first_budget_ids_filter_by_budget(
+        self,
+        mock_get_client,
+    ):
+        client = MagicMock()
+        query = client.table.return_value.select.return_value
+        query.gt.return_value = query
+        query.lte.return_value = query
+        query.order.return_value = query
+        query.limit.return_value = query
+        query.execute.return_value = SimpleNamespace(
+            data=[
+                {
+                    "id": "offer-1",
+                    "product_id": "product-1",
+                    "current_price": 20,
+                    "availability": "available",
+                    "condition": "new",
+                    "data_confidence": "alta",
+                },
+                {
+                    "id": "offer-2",
+                    "product_id": "product-2",
+                    "current_price": 80,
+                    "availability": "available",
+                    "condition": "new",
+                    "data_confidence": "media",
+                },
+                {
+                    "id": "offer-duplicate",
+                    "product_id": "product-1",
+                    "current_price": 90,
+                    "availability": "available",
+                    "condition": "new",
+                    "data_confidence": "alta",
+                },
+            ]
+        )
+        mock_get_client.return_value = client
+
+        product_ids = catalog_repository.fetch_offer_first_product_ids(
+            reason="budget",
+            budget=100,
+        )
+
+        self.assertEqual(product_ids, ["product-1", "product-2"])
+        query.gt.assert_called_once_with("current_price", 0)
+        query.lte.assert_called_once_with("current_price", 100.0)
+        self.assertEqual(
+            query.order.call_args_list,
+            [
+                call("current_price", nullsfirst=False),
+                call("id"),
+            ],
+        )
+
+    @patch("repositories.catalog_repository.get_supabase_client")
+    def test_offer_first_invalid_request_skips_query(self, mock_get_client):
+        self.assertEqual(
+            catalog_repository.fetch_offer_first_product_ids(
+                reason="budget",
+                budget=None,
+            ),
+            [],
+        )
+        self.assertEqual(
+            catalog_repository.fetch_offer_first_product_ids(
+                reason="unknown",
+            ),
+            [],
+        )
+        mock_get_client.assert_not_called()
+
+    @patch("repositories.catalog_repository.get_supabase_client")
     def test_fetch_candidate_products_applies_category_filter_and_limit(
         self,
         mock_get_client,

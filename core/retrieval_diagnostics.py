@@ -20,6 +20,9 @@ class RetrievalDiagnostics:
     budget: float | None = None
     bounded_retrieval_used: bool = False
     bounded_candidates: int = 0
+    offer_first_retrieval_used: bool = False
+    offer_first_product_ids: int = 0
+    offer_first_reason: str | None = None
     legacy_fallback_used: bool = False
     fallback_reason: str | None = None
     products_passed_to_ranking: int = 0
@@ -89,6 +92,18 @@ def record_bounded_candidates(count, used):
     def apply(diagnostics):
         diagnostics.bounded_retrieval_used = bool(used)
         diagnostics.bounded_candidates = max(0, int(count))
+
+    _update(apply)
+
+
+def record_offer_first_retrieval(used, product_id_count, reason=None):
+    def apply(diagnostics):
+        diagnostics.offer_first_retrieval_used = bool(used)
+        diagnostics.offer_first_product_ids = max(
+            0,
+            int(product_id_count),
+        )
+        diagnostics.offer_first_reason = reason if used else None
 
     _update(apply)
 
