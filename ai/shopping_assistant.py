@@ -14,6 +14,7 @@ from core.retrieval_diagnostics import (
     record_bounded_candidates,
     record_final_products,
     record_legacy_fallback,
+    record_offer_first_retrieval,
     record_offer_lookup,
     record_parsed_question,
     record_ranking_input,
@@ -24,9 +25,11 @@ from repositories.catalog_repository import (
     build_store_lookup,
     fetch_candidate_products,
     fetch_history_for_product,
+    fetch_offer_first_product_ids,
     fetch_offers_for_product,
     fetch_offers_for_product_ids,
     fetch_products,
+    fetch_products_by_ids,
     fetch_stores,
     fetch_stores_by_ids,
 )
@@ -1147,7 +1150,7 @@ def bounded_candidates_are_sufficient(products, parsed, limit):
     return len(products) >= min(limit, DEFAULT_PRODUCT_LIMIT)
 
 
-def retrieve_products(parsed, limit=80):
+def retrieve_products(parsed, limit=80, allow_legacy_fallback=True):
     products, bounded_query_used = fetch_bounded_product_candidates(parsed)
     used_legacy_fallback = False
     record_bounded_candidates(len(products), bounded_query_used)
@@ -1157,6 +1160,9 @@ def retrieve_products(parsed, limit=80):
         parsed,
         limit,
     ):
+        if not allow_legacy_fallback:
+            return []
+
         if not bounded_query_used:
             fallback_reason = "no_safe_bounded_filters"
         elif not products:
@@ -1173,10 +1179,82 @@ def retrieve_products(parsed, limit=80):
     if ranked or not bounded_query_used or used_legacy_fallback:
         return ranked
 
+    if not allow_legacy_fallback:
+        return []
+
     record_legacy_fallback("no_ranked_bounded_candidates")
     products = fetch_products()
     record_ranking_input(len(products))
     return rank_product_candidates(products, parsed, limit)
+
+
+def offer_first_reason(parsed):
+    if parsed.category or parsed.brand or looks_product_specific_parsed(parsed):
+        return None
+
+    if parsed.intent == "discount_ranking":
+        return "discount"
+
+    if parsed.intent == "best_under_budget" and parsed.budget is not None:
+        return "budget"
+
+    return None
+
+
+def retrieve_products_with_offer_first(parsed, limit):
+    reason = offer_first_reason(parsed)
+    if reason is None:
+        return retrieve_products(parsed, limit=limit)
+
+    products = retrieve_products(
+        parsed,
+        limit=limit,
+        allow_legacy_fallback=False,
+    )
+    if products:
+        return products
+
+    product_ids = fetch_offer_first_product_ids(
+        reason=reason,
+        budget=parsed.budget,
+    )
+    record_offer_first_retrieval(
+        used=True,
+        product_id_count=len(product_ids),
+        reason=reason,
+    )
+    fallback_reason = "no_offer_first_product_ids"
+
+    if product_ids:
+        offer_first_products = fetch_products_by_ids(product_ids)
+        fallback_reason = "no_offer_first_products"
+        record_ranking_input(len(offer_first_products))
+        ranked_products = rank_product_candidates(
+            offer_first_products,
+            parsed,
+            limit,
+        )
+
+        if ranked_products:
+            return ranked_products
+
+        if (
+            parsed.intent == "discount_ranking"
+            and offer_first_products
+        ):
+            return offer_first_products[:limit]
+
+        if offer_first_products:
+            fallback_reason = "no_ranked_offer_first_candidates"
+
+    record_legacy_fallback(fallback_reason)
+    legacy_products = fetch_products()
+    record_ranking_input(len(legacy_products))
+
+    if parsed.intent == "discount_ranking":
+        return legacy_products
+
+    return rank_product_candidates(legacy_products, parsed, limit)
 
 
 def expanded_terms(keywords, category=None):
@@ -1625,7 +1703,7 @@ def products_and_records_for_parsed(parsed):
         return [], []
 
     if parsed.intent == "discount_ranking":
-        products = retrieve_products(parsed, limit=160)
+        products = retrieve_products_with_offer_first(parsed, limit=160)
 
         if not products:
             products = fetch_products()
@@ -1640,7 +1718,7 @@ def products_and_records_for_parsed(parsed):
 
     if parsed.intent == "best_under_budget":
         limit = 300 if not parsed.category and not parsed.keywords else 160
-        products = retrieve_products(parsed, limit=limit)
+        products = retrieve_products_with_offer_first(parsed, limit=limit)
         records = collect_offer_records(products, budget=parsed.budget)
         records = rank_offer_records(records, parsed)
         return products, records
